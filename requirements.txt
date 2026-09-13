@@ -1,0 +1,12 @@
+torch
+diffusers
+transformers
+runpod
+accelerate
+safetensors
+pillow
+moviepy
+imageio
+opencv-python
+gTTS          # Google Text-to-Speech for Hindi
+pydub         # for audio handling
