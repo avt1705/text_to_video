@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsm6 \
     libxext6 \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
