@@ -64,6 +64,12 @@ def handler(event):
     output_path = os.path.join(workspace, "final_video.mp4")
     final.write_videofile(output_path, fps=24)
 
-    return {"output": output_path}
+    # --- Return artifacts so UI shows download buttons ---
+    return {
+        "output": {
+            "video_file": output_path,
+            "audio_file": audio_path
+        }
+    }
 
 runpod.serverless.start({"handler": handler})
