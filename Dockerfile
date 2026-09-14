@@ -20,4 +20,4 @@ COPY . .
 RUN ls -l /app
 
 # Run handler directly
-CMD ["python", "handler.py"]
+ENTRYPOINT ["python", "handler.py"]
