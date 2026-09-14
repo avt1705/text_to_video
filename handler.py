@@ -1,3 +1,5 @@
+print(">>> handler.py starting")
+
 import runpod
 import moviepy.editor as mpy
 from gtts import gTTS
