@@ -31,7 +31,7 @@ def handler(event):
         return {"error": "No script provided."}
 
     # --- Step 1: Generate narration ---
-    audio_path = "/tmp/narration.mp3"
+    audio_path = "/runpod-volume/narration.mp3"
     print(">>> Generating TTS audio")
     tts = gTTS(text=script, lang='hi')
     tts.save(audio_path)
@@ -75,7 +75,7 @@ def handler(event):
     final = mpy.CompositeVideoClip([clip, *subtitles])
     final = final.set_audio(mpy.AudioFileClip(audio_path))
 
-    output_path = "/tmp/final_video.mp4"
+    output_path = "/runpod-volume/final_video.mp4"
     print(">>> Writing final video:", output_path)
     final.write_videofile(output_path, fps=24)
 
