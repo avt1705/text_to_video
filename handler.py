@@ -1,23 +1,21 @@
-print(">>> handler.py starting")
-
 import runpod
 import moviepy.editor as mpy
 from gtts import gTTS
 from pydub import AudioSegment, silence
 
-print(">>> handler.py loaded successfully")   # <-- add at the very top
+print(">>> handler.py loaded successfully")   # startup confirmation
 
 def handler(event):
-    print(">>> Handler received event:", event)   # <-- add inside handler start
+    print(">>> Handler received event:", event)
 
     script = event.get("input", {}).get("script", None)
     if not script:
-        print(">>> No script provided")           # <-- add before returning error
+        print(">>> No script provided")
         return {"error": "No script provided."}
 
     # --- Step 1: Generate Hindi narration ---
     audio_path = "/tmp/narration.mp3"
-    print(">>> Generating TTS audio")             # <-- add before gTTS
+    print(">>> Generating TTS audio")
     tts = gTTS(text=script, lang='hi')
     tts.save(audio_path)
 
@@ -33,12 +31,14 @@ def handler(event):
     )
     print(">>> Split into", len(chunks), "chunks")
 
-    # --- Step 3: Background video ---
+    # --- Step 3: Background video (ColorClip instead of missing file) ---
     total_duration = audio.duration_seconds
     print(">>> Creating background video for", total_duration, "seconds")
-    clip = mpy.ImageClip("background.jpg").set_duration(total_duration).set_fps(24)
+    clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)) \
+              .set_duration(total_duration) \
+              .set_fps(24)
 
-    # --- Step 4: Map script lines ---
+    # --- Step 4: Map script lines to audio chunks ---
     lines = script.split("\n")
     subtitles = []
     current_time = 0
@@ -56,7 +56,7 @@ def handler(event):
 
         current_time += chunk_duration
 
-    # --- Step 5: Combine ---
+    # --- Step 5: Combine video + subtitles + audio ---
     print(">>> Combining video + audio")
     final = mpy.CompositeVideoClip([clip, *subtitles])
     final = final.set_audio(mpy.AudioFileClip(audio_path))
