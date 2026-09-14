@@ -2,8 +2,25 @@ import runpod
 import moviepy.editor as mpy
 from gtts import gTTS
 from pydub import AudioSegment, silence
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
-print(">>> handler.py loaded successfully")   # startup confirmation
+print(">>> handler.py loaded successfully")
+
+def make_text_clip(text, duration, start):
+    """Create a subtitle clip using Pillow instead of ImageMagick."""
+    # Create a blank image for subtitle bar
+    img = Image.new("RGB", (1280, 200), color="black")
+    draw = ImageDraw.Draw(img)
+
+    # Use a system font (DejaVuSans is installed via Dockerfile)
+    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+    draw.text((50, 50), text, font=font, fill="white")
+
+    # Convert to numpy array for MoviePy
+    frame = np.array(img)
+    clip = mpy.ImageClip(frame).set_duration(duration).set_start(start).set_position(("center", "bottom"))
+    return clip
 
 def handler(event):
     print(">>> Handler received event:", event)
@@ -13,7 +30,7 @@ def handler(event):
         print(">>> No script provided")
         return {"error": "No script provided."}
 
-    # --- Step 1: Generate Hindi narration ---
+    # --- Step 1: Generate narration ---
     audio_path = "/tmp/narration.mp3"
     print(">>> Generating TTS audio")
     tts = gTTS(text=script, lang='hi')
@@ -31,7 +48,7 @@ def handler(event):
     )
     print(">>> Split into", len(chunks), "chunks")
 
-    # --- Step 3: Background video (ColorClip instead of missing file) ---
+    # --- Step 3: Background video ---
     total_duration = audio.duration_seconds
     print(">>> Creating background video for", total_duration, "seconds")
     clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)) \
@@ -48,10 +65,7 @@ def handler(event):
         print(f">>> Subtitle {i}: '{line}' ({chunk.duration_seconds}s)")
         chunk_duration = chunk.duration_seconds
 
-        txt_clip = mpy.TextClip(line, fontsize=40, color='white', bg_color='black')
-        txt_clip = txt_clip.set_position(('center','bottom')) \
-                           .set_duration(chunk_duration) \
-                           .set_start(current_time)
+        txt_clip = make_text_clip(line, chunk_duration, current_time)
         subtitles.append(txt_clip)
 
         current_time += chunk_duration
