@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "handler.py"]
+CMD ["python", "-m", "runpod.serverless"]
