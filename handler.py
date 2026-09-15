@@ -5,6 +5,7 @@ from pydub import AudioSegment, silence
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import os
+import boto3
 
 def make_text_clip(text, duration, start):
     img = Image.new("RGB", (1280, 200), color="black")
@@ -64,11 +65,34 @@ def handler(event):
     output_path = os.path.join(workspace, "final_video.mp4")
     final.write_videofile(output_path, fps=24)
 
-    # --- Return artifacts so UI shows download buttons ---
+    # --- Step 6: Generate pre-signed S3 URL ---
+    # Assumes your network volume is backed by S3 and credentials are available
+    bucket_name = os.environ.get("S3_BUCKET")  # set this in your endpoint environment
+    s3_key_video = "final_video.mp4"
+    s3_key_audio = "narration.mp3"
+
+    s3 = boto3.client("s3")
+
+    # Upload files to S3
+    s3.upload_file(output_path, bucket_name, s3_key_video)
+    s3.upload_file(audio_path, bucket_name, s3_key_audio)
+
+    # Generate presigned URLs
+    video_url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket_name, "Key": s3_key_video},
+        ExpiresIn=3600  # 1 hour expiry
+    )
+    audio_url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket_name, "Key": s3_key_audio},
+        ExpiresIn=3600
+    )
+
     return {
         "output": {
-            "video_file": output_path,
-            "audio_file": audio_path
+            "video_url": video_url,
+            "audio_url": audio_url
         }
     }
 
