@@ -61,7 +61,7 @@ def handler(event):
 
     # --- Step 6: Upload to RunPod S3 bucket ---
     bucket_name = os.environ.get("S3_BUCKET")          # e.g. 5pg6wyk843
-    region_name = os.environ.get("AWS_DEFAULT_REGION") # e.g. eu-ro-1
+    region_name = "eu-ro-1" # e.g. eu-ro-1
     endpoint_url = "https://s3api-eu-ro-1.runpod.io"   # hard-coded RunPod endpoint
 
     s3 = boto3.client(
