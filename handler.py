@@ -5,7 +5,7 @@ from pydub import AudioSegment, silence
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import os
-import boto3
+import base64
 
 def make_text_clip(text, duration, start):
     img = Image.new("RGB", (1280, 200), color="black")
@@ -59,39 +59,13 @@ def handler(event):
     output_path = os.path.join(workspace, "final_video.mp4")
     final.write_videofile(output_path, fps=24)
 
-    # --- Step 6: Upload to RunPod S3 bucket ---
-    bucket_name = "5pg6wyk843"         # e.g. 5pg6wyk843
-    region_name = "eu-ro-1" # e.g. eu-ro-1
-    endpoint_url = "https://s3api-eu-ro-1.runpod.io"   # hard-coded RunPod endpoint
-
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
-        region_name=region_name,
-        endpoint_url=endpoint_url
-    )
-
-    # Upload files
-    s3.upload_file(output_path, bucket_name, "final_video.mp4")
-    s3.upload_file(audio_path, bucket_name, "narration.mp3")
-
-    # Generate presigned URLs (24h expiry)
-    video_url = s3.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": bucket_name, "Key": "final_video.mp4"},
-        ExpiresIn=86400
-    )
-    audio_url = s3.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": bucket_name, "Key": "narration.mp3"},
-        ExpiresIn=86400
-    )
+    # --- Step 6: Encode video as base64 ---
+    with open(output_path, "rb") as f:
+        encoded_video = base64.b64encode(f.read()).decode("utf-8")
 
     return {
         "output": {
-            "video_url": video_url,
-            "audio_url": audio_url
+            "video_base64": encoded_video
         }
     }
 
