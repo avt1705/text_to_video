@@ -20,14 +20,8 @@ def handler(event):
     if not script:
         return {"error": "No script provided."}
 
-    # --- Ensure runpod-volume exists and clean it ---
     workspace = "/runpod-volume"
     os.makedirs(workspace, exist_ok=True)
-    for f in os.listdir(workspace):
-        try:
-            os.remove(os.path.join(workspace, f))
-        except Exception:
-            pass
 
     # --- Step 1: Generate narration ---
     audio_path = os.path.join(workspace, "narration.mp3")
@@ -65,28 +59,33 @@ def handler(event):
     output_path = os.path.join(workspace, "final_video.mp4")
     final.write_videofile(output_path, fps=24)
 
-    # --- Step 6: Generate pre-signed S3 URL ---
-    # Assumes your network volume is backed by S3 and credentials are available
-    bucket_name = os.environ.get("S3_BUCKET")  # set this in your endpoint environment
-    s3_key_video = "final_video.mp4"
-    s3_key_audio = "narration.mp3"
+    # --- Step 6: Upload to RunPod S3 bucket ---
+    bucket_name = os.environ.get("S3_BUCKET")          # e.g. 5pg6wyk843
+    region_name = os.environ.get("AWS_DEFAULT_REGION") # e.g. eu-ro-1
+    endpoint_url = "https://s3api-eu-ro-1.runpod.io"   # hard-coded RunPod endpoint
 
-    s3 = boto3.client("s3")
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=region_name,
+        endpoint_url=endpoint_url
+    )
 
-    # Upload files to S3
-    s3.upload_file(output_path, bucket_name, s3_key_video)
-    s3.upload_file(audio_path, bucket_name, s3_key_audio)
+    # Upload files
+    s3.upload_file(output_path, bucket_name, "final_video.mp4")
+    s3.upload_file(audio_path, bucket_name, "narration.mp3")
 
-    # Generate presigned URLs
+    # Generate presigned URLs (24h expiry)
     video_url = s3.generate_presigned_url(
         "get_object",
-        Params={"Bucket": bucket_name, "Key": s3_key_video},
-        ExpiresIn=3600  # 1 hour expiry
+        Params={"Bucket": bucket_name, "Key": "final_video.mp4"},
+        ExpiresIn=86400
     )
     audio_url = s3.generate_presigned_url(
         "get_object",
-        Params={"Bucket": bucket_name, "Key": s3_key_audio},
-        ExpiresIn=3600
+        Params={"Bucket": bucket_name, "Key": "narration.mp3"},
+        ExpiresIn=86400
     )
 
     return {
