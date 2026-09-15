@@ -60,7 +60,7 @@ def handler(event):
     final.write_videofile(output_path, fps=24)
 
     # --- Step 6: Upload to RunPod S3 bucket ---
-    bucket_name = os.environ.get("S3_BUCKET")          # e.g. 5pg6wyk843
+    bucket_name = "5pg6wyk843"         # e.g. 5pg6wyk843
     region_name = "eu-ro-1" # e.g. eu-ro-1
     endpoint_url = "https://s3api-eu-ro-1.runpod.io"   # hard-coded RunPod endpoint
 
