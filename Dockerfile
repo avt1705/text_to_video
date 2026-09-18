@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN curl -L -o /app/NotoSansDevanagari.ttf "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari-Bold.ttf"
 
+# Pin setuptools to bypass the missing pkg_resources error
 RUN python3 -m pip install --upgrade pip "setuptools<70.0.0" wheel
 
 # Clone Wav2Lip and download pretrained checkpoints
