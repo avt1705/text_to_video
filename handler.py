@@ -123,21 +123,31 @@ def handler(event):
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
         
-        audio_path = os.path.join(workdir, "speech.wav")
+        # Two separate audio paths handle the conversion safely
+        audio_mp3_path = os.path.join(workdir, "speech.mp3")
+        audio_wav_path = os.path.join(workdir, "speech.wav")
+        
         face_path = os.path.join(workdir, "face.png")
         animated_avatar_path = os.path.join(workdir, "avatar.mp4")
         final_video_path = os.path.join(workdir, "final.mp4")
         
         log("Generating TTS audio...")
-        generate_audio(script, audio_path, elevenlabs_key)
-        audio_segment = AudioSegment.from_file(audio_path)
+        # 1. Save the raw API output as an MP3
+        generate_audio(script, audio_mp3_path, elevenlabs_key)
+        
+        # 2. Load the MP3 safely
+        audio_segment = AudioSegment.from_file(audio_mp3_path)
         total_duration = audio_segment.duration_seconds
+        
+        # 3. Export as a clean 16kHz Mono WAV specifically for Wav2Lip
+        audio_segment.set_frame_rate(16000).set_channels(1).export(audio_wav_path, format="wav")
         
         log("Generating avatar image...")
         generate_instructor_image(char_prompt, face_path)
         
         log("Executing Wav2Lip animation...")
-        run_wav2lip(face_path, audio_path, animated_avatar_path)
+        # 4. Pass the newly converted clean WAV to Wav2Lip
+        run_wav2lip(face_path, audio_wav_path, animated_avatar_path)
         
         chunks = silence.split_on_silence(
             audio_segment, min_silence_len=400, silence_thresh=audio_segment.dBFS - 14, keep_silence=200
