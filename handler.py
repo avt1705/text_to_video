@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import threading
 import base64
 import textwrap
 import traceback
@@ -47,9 +48,20 @@ def generate_instructor_image(prompt: str, save_path: str):
     img.save(save_path)
 
 async def generate_edge_tts(text: str, output_path: str):
-    # Free premium Indian neural voice
     communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural", rate="+0%")
     await communicate.save(output_path)
+
+def run_async_in_thread(coro):
+    """Executes an async coroutine in a separate thread to avoid RunPod event loop conflicts."""
+    def run_and_save():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(coro)
+        loop.close()
+    
+    t = threading.Thread(target=run_and_save)
+    t.start()
+    t.join()
 
 def generate_audio(script: str, output_path: str, api_key: str = None):
     if api_key:
@@ -61,7 +73,7 @@ def generate_audio(script: str, output_path: str, api_key: str = None):
         except Exception as e:
             log(f"ElevenLabs failed: {e}")
             
-    asyncio.run(generate_edge_tts(script, output_path))
+    run_async_in_thread(generate_edge_tts(script, output_path))
 
 def run_wav2lip(face_path: str, audio_path: str, output_path: str):
     cmd = [
@@ -116,11 +128,15 @@ def handler(event):
         animated_avatar_path = os.path.join(workdir, "avatar.mp4")
         final_video_path = os.path.join(workdir, "final.mp4")
         
+        log("Generating TTS audio...")
         generate_audio(script, audio_path, elevenlabs_key)
         audio_segment = AudioSegment.from_file(audio_path)
         total_duration = audio_segment.duration_seconds
         
+        log("Generating avatar image...")
         generate_instructor_image(char_prompt, face_path)
+        
+        log("Executing Wav2Lip animation...")
         run_wav2lip(face_path, audio_path, animated_avatar_path)
         
         chunks = silence.split_on_silence(
@@ -150,6 +166,7 @@ def handler(event):
                 subtitle_clips.append(sub_clip)
             current_time += duration
             
+        log("Compositing final video elements...")
         final_video = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips])
         final_video.write_videofile(final_video_path, fps=24, codec="libx264", audio_codec="aac", verbose=False, logger=None)
         
