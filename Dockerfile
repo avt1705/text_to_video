@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy your visual sprites and your voice sample
 COPY my_scene1.png /app/my_scene1.png
 COPY my_scene2.png /app/my_scene2.png
-COPY my_scene3.png /app/my_scene3.png
+#COPY my_scene3.png /app/my_scene3.png
 COPY my_voice.wav /app/my_voice.wav
 
 COPY handler.py .
