@@ -2,6 +2,7 @@ import os
 import base64
 import textwrap
 import traceback
+import subprocess
 import numpy as np
 import PIL.Image
 from PIL import Image, ImageDraw, ImageFont
@@ -16,7 +17,6 @@ from pydub import AudioSegment, silence
 
 FONT_PATH = "/app/NotoSansDevanagari.ttf"
 VOICE_SAMPLE_PATH = "/app/my_voice.wav"
-SPRITE_SHEET_PATH = "/app/sprite_sheet.png"
 
 xtts_model = None
 
@@ -34,48 +34,27 @@ def ensure_tts_loaded():
 
 def generate_audio(script: str, output_path: str):
     ensure_tts_loaded()
+    raw_audio_path = output_path.replace(".wav", "_raw.wav")
+    
+    # 1. Generate normal slow audio
     xtts_model.tts_to_file(
         text=script, 
         speaker_wav=VOICE_SAMPLE_PATH, 
         language="hi", 
-        file_path=output_path
+        file_path=raw_audio_path
     )
+    
+    # 2. Speed up audio by 25% (1.25x) using FFmpeg without altering pitch
+    log("Applying FFmpeg atempo filter to increase audio speed...")
+    subprocess.run([
+        "ffmpeg", "-y", "-i", raw_audio_path, 
+        "-filter:a", "atempo=1.25", output_path
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def get_speaking_intervals(audio_path: str):
     audio = AudioSegment.from_file(audio_path)
     nonsilent = silence.detect_nonsilent(audio, min_silence_len=150, silence_thresh=-40)
     return [(s / 1000.0, e / 1000.0) for s, e in nonsilent], audio.duration_seconds
-
-def split_sprite_sheet(sheet_path, output_dir):
-    """Slices the 1x5 grid with safe margins to avoid borders and text."""
-    img = Image.open(sheet_path)
-    w, h = img.size
-    panel_w = w // 5
-    
-    # Crop higher up (bottom 40% removed) to ensure the text is completely gone
-    panel_h = int(h * 0.60) 
-    
-    # Shave 5% off the top to remove the top white margin
-    top_margin = int(h * 0.05)
-
-    frames = []
-    for i in range(5):
-        raw_left = i * panel_w
-        raw_right = (i + 1) * panel_w
-        
-        # Shave 5% off the left and right sides of each panel to avoid black divider lines
-        horizontal_margin = int(panel_w * 0.05)
-        
-        left = raw_left + horizontal_margin
-        right = raw_right - horizontal_margin
-        upper = top_margin
-        lower = panel_h
-        
-        cropped = img.crop((left, upper, right, lower))
-        out_path = os.path.join(output_dir, f"frame_{i}.png")
-        cropped.save(out_path)
-        frames.append(out_path)
-    return frames
 
 def create_subtitle_file(text: str, filepath: str, width=980, height=1920):
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -91,10 +70,8 @@ def create_subtitle_file(text: str, filepath: str, width=980, height=1920):
     text_h = bbox[3] - bbox[1]
 
     pos_x = (width - text_w) // 2
-    # Place subtitles higher up from the bottom for YouTube Shorts UI
     pos_y = height - text_h - 300 
 
-    # Draw text with a thick black stroke for readability
     draw.multiline_text(
         (pos_x, pos_y), wrapped_text, font=font, fill=(255, 223, 0),
         stroke_width=8, stroke_fill=(0, 0, 0), align="center", spacing=15
@@ -115,10 +92,15 @@ def handler(event):
         generate_audio(script, audio_path)
         speaking_intervals, total_dur = get_speaking_intervals(audio_path)
 
-        log("Step 2: Processing Frames (Vertical Format)")
-        frame_paths = split_sprite_sheet(SPRITE_SHEET_PATH, workdir)
+        log("Step 2: Loading Individual Frames")
+        # Load the specific 4 frames requested
+        frame_paths = [
+            "/app/frame1.png",
+            "/app/frame2.png",
+            "/app/frame3.png",
+            "/app/frame4.png"
+        ]
         
-        # Scale frames to fit a 1080p vertical width
         clips = [mpy.ImageClip(f).resize(width=1080) for f in frame_paths]
         idle_clip = clips[0]
         talk_clips = clips[1:] 
@@ -130,12 +112,9 @@ def handler(event):
                 return talk_clips[gesture_idx].get_frame(0)
             return idle_clip.get_frame(0)
 
-        # Center character in a 1080x1920 frame
         char_h = idle_clip.h
         base_y = (1920 - char_h) // 2
         char_clip = mpy.VideoClip(make_frame, duration=total_dur).set_position(("center", base_y))
-        
-        # Dark studio background
         bg_clip = mpy.ColorClip(size=(1080, 1920), color=(18, 18, 24)).set_duration(total_dur)
 
         log("Step 3: Subtitles")
