@@ -39,13 +39,14 @@ def ensure_model_loaded():
 
 def generate_instructor_image(prompt: str, save_path: str):
     ensure_model_loaded()
-    instructor_prompt = f"{prompt}, close up portrait, facing camera, looking directly at viewer, highly detailed"
+    # Forces SD to frame the face clearly for Wav2Lip's face detection
+    instructor_prompt = f"{prompt}, close up portrait, face perfectly centered, looking directly at viewer, highly detailed"
     result = pipe(instructor_prompt, num_inference_steps=25, guidance_scale=7.5)
     img = result.images[0].resize((512, 512))
     img.save(save_path)
 
 def generate_audio(script: str, output_path: str, api_key: str = None):
-    # 1. Try ElevenLabs (Highest Quality)
+    # 1. Try ElevenLabs
     if api_key:
         try:
             log("Attempting ElevenLabs TTS generation...")
@@ -71,15 +72,15 @@ def generate_audio(script: str, output_path: str, api_key: str = None):
     ]
     
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             log("Edge TTS audio successfully saved.")
             return
     except subprocess.CalledProcessError as e:
-        log("Edge TTS Failed! Microsoft likely blocked the RunPod IP or rejected the Hinglish text.")
+        log("Edge TTS Failed! Microsoft likely blocked the RunPod IP or rejected the text.")
         log(f"Edge TTS Error Log: {e.stderr}")
         
-    # 3. Ultimate Fallback: gTTS (Ensures the video always generates)
+    # 3. Ultimate Fallback: gTTS
     log("Falling back to basic gTTS to ensure video generation completes...")
     from gtts import gTTS
     tts = gTTS(text=script, lang='hi', slow=False)
@@ -94,9 +95,18 @@ def run_wav2lip(face_path: str, audio_path: str, output_path: str):
         "--audio", audio_path,
         "--outfile", output_path,
         "--nosmooth",
-        "--pads", "0", "20", "0", "0"  # Prevents chin cut-off
+        "--pads", "0", "20", "0", "0"
     ]
-    subprocess.run(cmd, cwd="/app/Wav2Lip", check=True)
+    try:
+        log("Starting Wav2Lip inference script...")
+        # capture_output forces the internal Python tracebacks from Wav2Lip into RunPod's logs
+        subprocess.run(cmd, cwd="/app/Wav2Lip", check=True, capture_output=True, text=True)
+        log("Wav2Lip animation completed successfully.")
+    except subprocess.CalledProcessError as e:
+        log("CRITICAL ERROR: Wav2Lip crashed during execution.")
+        log(f"STDOUT: {e.stdout}")
+        log(f"STDERR: {e.stderr}")
+        raise RuntimeError(f"Wav2Lip Inference Error: {e.stderr}")
 
 def split_sentences(text: str):
     parts = re.split(r'[।.!?\n]+', text)
@@ -136,7 +146,6 @@ def handler(event):
         
         audio_mp3_path = os.path.join(workdir, "speech.mp3")
         audio_wav_path = os.path.join(workdir, "speech.wav")
-        
         face_path = os.path.join(workdir, "face.png")
         animated_avatar_path = os.path.join(workdir, "avatar.mp4")
         final_video_path = os.path.join(workdir, "final.mp4")
@@ -147,7 +156,7 @@ def handler(event):
         audio_segment = AudioSegment.from_file(audio_mp3_path)
         total_duration = audio_segment.duration_seconds
         
-        # 16kHz Mono specifically for Wav2Lip
+        # 16kHz Mono specifically required for Wav2Lip
         audio_segment.set_frame_rate(16000).set_channels(1).export(audio_wav_path, format="wav")
         
         log("Generating avatar image...")
@@ -163,7 +172,6 @@ def handler(event):
             chunks = [audio_segment]
             
         sentences = split_sentences(script)
-        
         bg_clip = mpy.ColorClip(size=(1280, 720), color=(15, 23, 42)).set_duration(total_duration)
         
         avatar_clip = (
