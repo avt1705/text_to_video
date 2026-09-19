@@ -19,10 +19,8 @@ def split_sentences(text: str):
     return [p.strip() for p in parts if p.strip()]
 
 def create_subtitle_frame(text: str, width=1280, height=200):
-    """Creates a dark, semi-transparent banner with centered Hindi text."""
     img = Image.new("RGBA", (width, height), (10, 15, 25, 230))
     draw = ImageDraw.Draw(img)
-
     try:
         font = ImageFont.truetype(FONT_PATH, 42)
     except Exception:
@@ -44,10 +42,9 @@ def handler(event):
         input_data = event.get("input", {})
         script = input_data.get("script", "").strip()
         audio_b64 = input_data.get("audio_base64", "")
-        frames_b64 = input_data.get("frames_base64", [])
 
-        if not script or not audio_b64 or not frames_b64:
-            return {"error": "Missing script, audio, or frame inputs."}
+        if not script or not audio_b64:
+            return {"error": "Missing script or audio inputs."}
 
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
@@ -62,35 +59,28 @@ def handler(event):
         audio_segment = AudioSegment.from_file(audio_path)
         total_duration = audio_segment.duration_seconds
 
-        # 2. Decode & Save Uploaded Frames
-        frame_paths = []
-        for i, b64_str in enumerate(frames_b64):
-            fpath = os.path.join(workdir, f"frame_{i}.png")
-            with open(fpath, "wb") as f:
-                f.write(base64.b64decode(b64_str))
-            frame_paths.append(fpath)
-
-        # 3. Setup Avatar Clips
-        # Treat the first uploaded image as the "idle" frame
-        idle_clip = mpy.ImageClip(frame_paths[0]).resize(height=720)
+        # 2. Setup Avatar Clips (Loading directly from the Docker container files)
+        # Ensure your files on GitHub are named "idle.png" and "talk1.png"
+        idle_path = "/app/idle.png"
+        talk_paths = ["/app/talk1.png"]
         
-        # Use all frames for talking. If only 1 was uploaded, auto-simulate a second talking frame
-        if len(frame_paths) > 1:
-            talk_clips = [mpy.ImageClip(p).resize(height=720) for p in frame_paths]
-        else:
-            base_img = Image.open(frame_paths[0])
-            shifted = base_img.crop((0, 10, base_img.width, base_img.height)).resize((base_img.width, base_img.height))
-            shifted_path = os.path.join(workdir, "shifted.png")
-            shifted.save(shifted_path)
-            talk_clips = [idle_clip, mpy.ImageClip(shifted_path).resize(height=720)]
+        # Check if a second talking frame exists for more dynamic movement
+        if os.path.exists("/app/talk2.png"):
+            talk_paths.append("/app/talk2.png")
 
-        # 4. Extract Speaking Intervals
+        if not os.path.exists(idle_path):
+            return {"error": "Could not find /app/idle.png in the container. Make sure it is copied in the Dockerfile."}
+
+        idle_clip = mpy.ImageClip(idle_path).resize(height=720)
+        talk_clips = [mpy.ImageClip(p).resize(height=720) for p in talk_paths]
+
+        # 3. Extract Speaking Intervals
         non_silent_ranges = silence.detect_nonsilent(
             audio_segment, min_silence_len=300, silence_thresh=audio_segment.dBFS - 14
         )
         speaking_intervals = [(start / 1000.0, end / 1000.0) for start, end in non_silent_ranges]
 
-        # 5. Audio-Reactive Auto-Adjusting Logic
+        # 4. Audio-Reactive Logic
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if not is_speaking:
@@ -110,11 +100,10 @@ def handler(event):
             frame_idx = int((t / dynamic_interval) % len(talk_clips))
             return talk_clips[frame_idx].get_frame(0)
 
-        # Apply logic to video clip
         avatar_clip = mpy.VideoClip(make_frame, duration=total_duration).set_position(("center", "center"))
         bg_clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)).set_duration(total_duration)
 
-        # 6. Process Subtitles
+        # 5. Process Subtitles
         chunks = silence.split_on_silence(
             audio_segment, min_silence_len=400, silence_thresh=audio_segment.dBFS - 14, keep_silence=200
         )
@@ -140,7 +129,7 @@ def handler(event):
                 subtitle_clips.append(sub_clip)
             current_time += duration
 
-        # 7. Compose & Render
+        # 6. Compose & Render
         final_video = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips])
         final_video = final_video.set_audio(mpy.AudioFileClip(audio_path))
 
