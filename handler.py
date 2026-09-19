@@ -18,96 +18,79 @@ def split_sentences(text: str):
     parts = re.split(r'[।.!?\n]+', text)
     return [p.strip() for p in parts if p.strip()]
 
-def create_subtitle_frame(text: str, width=1280, height=180):
-    img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
+def create_subtitle_frame(text: str, width=1280, height=200):
+    """Creates a dark, semi-transparent banner with centered Hindi text."""
+    img = Image.new("RGBA", (width, height), (10, 15, 25, 230))
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype(FONT_PATH, 36)
+        font = ImageFont.truetype(FONT_PATH, 42)
     except Exception:
         font = ImageFont.load_default()
 
     wrapped_text = "\n".join(textwrap.wrap(text, width=45))
-    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=8)
+    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=10)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
     pos_x = (width - text_w) // 2
     pos_y = (height - text_h) // 2
 
-    draw.multiline_text(
-        (pos_x, pos_y),
-        wrapped_text,
-        font=font,
-        fill=(255, 255, 255),
-        align="center",
-        spacing=8
-    )
+    draw.multiline_text((pos_x, pos_y), wrapped_text, font=font, fill=(255, 255, 255), align="center", spacing=10)
     return np.array(img)
-
-def ensure_avatar_frames(workdir):
-    """
-    Creates a simulated set of frames to mimic talking if custom frames aren't provided.
-    In a full production environment, replace these with actual avatar mouth frames.
-    """
-    idle_path = os.path.join(workdir, "idle.png")
-    talk_path_1 = os.path.join(workdir, "talk1.png")
-    talk_path_2 = os.path.join(workdir, "talk2.png")
-    
-    # Generate basic placeholder avatar frames for the demonstration
-    base_img = Image.new("RGB", (720, 720), color=(30, 41, 59))
-    draw = ImageDraw.Draw(base_img)
-    try:
-        font = ImageFont.truetype(FONT_PATH, 40)
-    except:
-        font = ImageFont.load_default()
-        
-    draw.text((260, 320), "AI Instructor", font=font, fill=(255, 255, 255))
-    base_img.save(idle_path)
-    
-    # Simulate movement for talk frames by shifting pixels slightly
-    base_img.crop((0, 10, 720, 720)).resize((720, 720)).save(talk_path_1)
-    base_img.crop((0, 20, 720, 720)).resize((720, 720)).save(talk_path_2)
-    
-    return idle_path, [talk_path_1, talk_path_2]
 
 def handler(event):
     try:
         input_data = event.get("input", {})
         script = input_data.get("script", "").strip()
         audio_b64 = input_data.get("audio_base64", "")
+        frames_b64 = input_data.get("frames_base64", [])
 
-        if not script or not audio_b64:
-            return {"error": "Missing 'script' or 'audio_base64' input."}
+        if not script or not audio_b64 or not frames_b64:
+            return {"error": "Missing script, audio, or frame inputs."}
 
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
+        
         audio_path = os.path.join(workdir, "speech.mp3")
         video_output_path = os.path.join(workdir, "final.mp4")
 
-        # 1. Save injected audio
+        # 1. Decode & Save Audio
         with open(audio_path, "wb") as f:
             f.write(base64.b64decode(audio_b64))
-
+            
         audio_segment = AudioSegment.from_file(audio_path)
         total_duration = audio_segment.duration_seconds
 
-        # 2. Extract speaking intervals for audio-reactive logic
-        # Find non-silent chunks to know exactly when the AI is speaking
+        # 2. Decode & Save Uploaded Frames
+        frame_paths = []
+        for i, b64_str in enumerate(frames_b64):
+            fpath = os.path.join(workdir, f"frame_{i}.png")
+            with open(fpath, "wb") as f:
+                f.write(base64.b64decode(b64_str))
+            frame_paths.append(fpath)
+
+        # 3. Setup Avatar Clips
+        # Treat the first uploaded image as the "idle" frame
+        idle_clip = mpy.ImageClip(frame_paths[0]).resize(height=720)
+        
+        # Use all frames for talking. If only 1 was uploaded, auto-simulate a second talking frame
+        if len(frame_paths) > 1:
+            talk_clips = [mpy.ImageClip(p).resize(height=720) for p in frame_paths]
+        else:
+            base_img = Image.open(frame_paths[0])
+            shifted = base_img.crop((0, 10, base_img.width, base_img.height)).resize((base_img.width, base_img.height))
+            shifted_path = os.path.join(workdir, "shifted.png")
+            shifted.save(shifted_path)
+            talk_clips = [idle_clip, mpy.ImageClip(shifted_path).resize(height=720)]
+
+        # 4. Extract Speaking Intervals
         non_silent_ranges = silence.detect_nonsilent(
-            audio_segment,
-            min_silence_len=300,
-            silence_thresh=audio_segment.dBFS - 14
+            audio_segment, min_silence_len=300, silence_thresh=audio_segment.dBFS - 14
         )
-        # Convert ms to seconds
         speaking_intervals = [(start / 1000.0, end / 1000.0) for start, end in non_silent_ranges]
 
-        # 3. Prepare Image Clips
-        idle_img, talk_imgs = ensure_avatar_frames(workdir)
-        idle_clip = mpy.ImageClip(idle_img)
-        talk_clips = [mpy.ImageClip(img) for img in talk_imgs]
-
-        # 4. Auto-Adjusting Audio-Reactive Frame Generator
+        # 5. Audio-Reactive Auto-Adjusting Logic
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if not is_speaking:
@@ -117,21 +100,21 @@ def handler(event):
             chunk = audio_segment[max(0, ms-50) : ms+50]
             volume = chunk.rms 
             
-            # Dynamic interval switching based on loudness
             if volume > 3500:       
-                dynamic_interval = 0.2  # Fast
+                dynamic_interval = 0.2  # Fast speaking
             elif volume > 1000:     
-                dynamic_interval = 0.4  # Medium
+                dynamic_interval = 0.4  # Normal speaking
             else:                   
-                dynamic_interval = 0.7  # Slow
+                dynamic_interval = 0.7  # Slow / quiet
                 
             frame_idx = int((t / dynamic_interval) % len(talk_clips))
             return talk_clips[frame_idx].get_frame(0)
 
-        # Apply custom frame generator to a base VideoClip
-        avatar_video = mpy.VideoClip(make_frame, duration=total_duration).set_position(("center", "center"))
+        # Apply logic to video clip
+        avatar_clip = mpy.VideoClip(make_frame, duration=total_duration).set_position(("center", "center"))
+        bg_clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)).set_duration(total_duration)
 
-        # 5. Build Subtitles
+        # 6. Process Subtitles
         chunks = silence.split_on_silence(
             audio_segment, min_silence_len=400, silence_thresh=audio_segment.dBFS - 14, keep_silence=200
         )
@@ -145,31 +128,26 @@ def handler(event):
         for idx, chunk in enumerate(chunks):
             duration = chunk.duration_seconds
             subtitle_text = sentences[idx] if idx < len(sentences) else ""
+            
             if subtitle_text:
                 sub_frame = create_subtitle_frame(subtitle_text)
                 sub_clip = (
                     mpy.ImageClip(sub_frame)
                     .set_duration(duration)
                     .set_start(current_time)
-                    .set_position(("center", 520))
+                    .set_position(("center", "bottom"))
                 )
                 subtitle_clips.append(sub_clip)
             current_time += duration
 
-        # 6. Compose and Render
-        bg_clip = mpy.ColorClip(size=(1280, 720), color=(15, 23, 42)).set_duration(total_duration)
-        final_video = mpy.CompositeVideoClip([bg_clip, avatar_video, *subtitle_clips])
+        # 7. Compose & Render
+        final_video = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips])
         final_video = final_video.set_audio(mpy.AudioFileClip(audio_path))
 
         log("Encoding output MP4...")
         final_video.write_videofile(
-            video_output_path,
-            fps=24,
-            codec="libx264",
-            audio_codec="aac",
-            ffmpeg_params=["-crf", "26", "-preset", "fast"],
-            verbose=False,
-            logger=None
+            video_output_path, fps=24, codec="libx264", audio_codec="aac",
+            ffmpeg_params=["-crf", "26", "-preset", "fast"], verbose=False, logger=None
         )
 
         with open(video_output_path, "rb") as f:
