@@ -47,43 +47,57 @@ def get_speaking_intervals(audio_path: str):
     return [(s / 1000.0, e / 1000.0) for s, e in nonsilent], audio.duration_seconds
 
 def split_sprite_sheet(sheet_path, output_dir):
-    """Slices the 1x5 grid image and crops out the bottom text."""
+    """Slices the 1x5 grid with safe margins to avoid borders and text."""
     img = Image.open(sheet_path)
     w, h = img.size
     panel_w = w // 5
-    panel_h = int(h * 0.65) # Crop out the bottom 35% where the text is
+    
+    # Crop higher up (bottom 40% removed) to ensure the text is completely gone
+    panel_h = int(h * 0.60) 
+    
+    # Shave 5% off the top to remove the top white margin
+    top_margin = int(h * 0.05)
 
     frames = []
     for i in range(5):
-        left = i * panel_w
-        upper = 0
-        right = left + panel_w
+        raw_left = i * panel_w
+        raw_right = (i + 1) * panel_w
+        
+        # Shave 5% off the left and right sides of each panel to avoid black divider lines
+        horizontal_margin = int(panel_w * 0.05)
+        
+        left = raw_left + horizontal_margin
+        right = raw_right - horizontal_margin
+        upper = top_margin
         lower = panel_h
+        
         cropped = img.crop((left, upper, right, lower))
         out_path = os.path.join(output_dir, f"frame_{i}.png")
         cropped.save(out_path)
         frames.append(out_path)
     return frames
 
-def create_subtitle_file(text: str, filepath: str, width=1280, height=720):
+def create_subtitle_file(text: str, filepath: str, width=980, height=1920):
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
-        font = ImageFont.truetype(FONT_PATH, 55)
+        font = ImageFont.truetype(FONT_PATH, 65)
     except Exception:
         font = ImageFont.load_default()
 
-    wrapped_text = "\n".join(textwrap.wrap(text, width=38))
-    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=10)
+    wrapped_text = "\n".join(textwrap.wrap(text, width=28))
+    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=15)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
     pos_x = (width - text_w) // 2
-    pos_y = height - text_h - 60
+    # Place subtitles higher up from the bottom for YouTube Shorts UI
+    pos_y = height - text_h - 300 
 
+    # Draw text with a thick black stroke for readability
     draw.multiline_text(
         (pos_x, pos_y), wrapped_text, font=font, fill=(255, 223, 0),
-        stroke_width=6, stroke_fill=(0, 0, 0), align="center", spacing=10
+        stroke_width=8, stroke_fill=(0, 0, 0), align="center", spacing=15
     )
     img.save(filepath)
 
@@ -101,38 +115,39 @@ def handler(event):
         generate_audio(script, audio_path)
         speaking_intervals, total_dur = get_speaking_intervals(audio_path)
 
-        log("Step 2: Processing Frames")
+        log("Step 2: Processing Frames (Vertical Format)")
         frame_paths = split_sprite_sheet(SPRITE_SHEET_PATH, workdir)
         
-        # Load and scale the 5 frames to fit the 720p height
-        clips = [mpy.ImageClip(f).resize(height=720) for f in frame_paths]
+        # Scale frames to fit a 1080p vertical width
+        clips = [mpy.ImageClip(f).resize(width=1080) for f in frame_paths]
         idle_clip = clips[0]
         talk_clips = clips[1:] 
 
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
             if is_speaking:
-                # Cycle through the 4 speaking gestures every 1.5 seconds
                 gesture_idx = int(t / 1.5) % len(talk_clips)
                 return talk_clips[gesture_idx].get_frame(0)
             return idle_clip.get_frame(0)
 
-        # Center the character on screen
-        char_w = idle_clip.w
-        base_x = (1280 - char_w) // 2
-        char_clip = mpy.VideoClip(make_frame, duration=total_dur).set_position((base_x, 0))
-        bg_clip = mpy.ColorClip(size=(1280, 720), color=(18, 18, 24)).set_duration(total_dur)
+        # Center character in a 1080x1920 frame
+        char_h = idle_clip.h
+        base_y = (1920 - char_h) // 2
+        char_clip = mpy.VideoClip(make_frame, duration=total_dur).set_position(("center", base_y))
+        
+        # Dark studio background
+        bg_clip = mpy.ColorClip(size=(1080, 1920), color=(18, 18, 24)).set_duration(total_dur)
 
         log("Step 3: Subtitles")
         words = script.split()
         text_clips = []
         current_time = 0.0
-        for i in range(0, len(words), 7):
-            chunk_words = words[i:i + 7]
+        for i in range(0, len(words), 6):
+            chunk_words = words[i:i + 6]
             chunk_dur = (len(chunk_words) / len(words)) * total_dur
             sub_path = os.path.join(workdir, f"sub_{i}.png")
             create_subtitle_file(" ".join(chunk_words), sub_path)
-            text_clips.append(mpy.ImageClip(sub_path).set_duration(chunk_dur).set_start(current_time))
+            text_clips.append(mpy.ImageClip(sub_path).set_duration(chunk_dur).set_start(current_time).set_position(("center", "center")))
             current_time += chunk_dur
 
         log("Step 4: Compositing")
