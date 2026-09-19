@@ -22,14 +22,15 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Force the compatible version of transformers
 RUN pip install --no-cache-dir transformers==4.36.2
 
-# Copy the 5-frame sprite sheet
-COPY Gemini_Generated_Image_g4q3nwg4q3nwg4q3.png /app/sprite_sheet.png
+# Copy the pre-cropped individual frames
+COPY frame1.png /app/frame1.png
+COPY frame2.png /app/frame2.png
+COPY frame3.png /app/frame3.png
+COPY frame4.png /app/frame4.png
 
-# Copy and automatically sanitize your 15-second voice sample
+# Copy and sanitize the voice sample
 COPY my_voice.wav /app/raw_voice.wav
 RUN ffmpeg -i /app/raw_voice.wav -acodec pcm_s16le -ar 22050 -ac 1 /app/my_voice.wav
 
