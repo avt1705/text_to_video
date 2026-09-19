@@ -45,7 +45,7 @@ def generate_instructor_image(prompt: str, save_path: str):
     img.save(save_path)
 
 def generate_audio(script: str, output_path: str, api_key: str = None):
-    # 1. Try ElevenLabs if a key is provided
+    # 1. Try ElevenLabs (Highest Quality)
     if api_key:
         try:
             log("Attempting ElevenLabs TTS generation...")
@@ -61,7 +61,7 @@ def generate_audio(script: str, output_path: str, api_key: str = None):
         except Exception as e:
             log(f"ElevenLabs generation failed: {e}. Falling back to Edge TTS.")
             
-    # 2. Fallback / Default: Use Edge TTS via synchronous subprocess (No asyncio)
+    # 2. Try Edge TTS via CLI
     log("Running Edge TTS generation via CLI...")
     cmd = [
         "edge-tts", 
@@ -69,11 +69,22 @@ def generate_audio(script: str, output_path: str, api_key: str = None):
         "--voice", "hi-IN-MadhurNeural", 
         "--write-media", output_path
     ]
-    subprocess.run(cmd, check=True)
     
-    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        raise RuntimeError("TTS engine failed to write the MP3 file.")
-    log("TTS audio successfully saved.")
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            log("Edge TTS audio successfully saved.")
+            return
+    except subprocess.CalledProcessError as e:
+        log("Edge TTS Failed! Microsoft likely blocked the RunPod IP or rejected the Hinglish text.")
+        log(f"Edge TTS Error Log: {e.stderr}")
+        
+    # 3. Ultimate Fallback: gTTS (Ensures the video always generates)
+    log("Falling back to basic gTTS to ensure video generation completes...")
+    from gtts import gTTS
+    tts = gTTS(text=script, lang='hi', slow=False)
+    tts.save(output_path)
+    log("Fallback gTTS audio saved.")
 
 def run_wav2lip(face_path: str, audio_path: str, output_path: str):
     cmd = [
@@ -123,7 +134,6 @@ def handler(event):
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
         
-        # Audio paths safely isolated for format conversion
         audio_mp3_path = os.path.join(workdir, "speech.mp3")
         audio_wav_path = os.path.join(workdir, "speech.wav")
         
@@ -137,7 +147,7 @@ def handler(event):
         audio_segment = AudioSegment.from_file(audio_mp3_path)
         total_duration = audio_segment.duration_seconds
         
-        # Exact 16kHz Mono format required by Wav2Lip
+        # 16kHz Mono specifically for Wav2Lip
         audio_segment.set_frame_rate(16000).set_channels(1).export(audio_wav_path, format="wav")
         
         log("Generating avatar image...")
