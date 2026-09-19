@@ -59,20 +59,30 @@ def handler(event):
         audio_segment = AudioSegment.from_file(audio_path)
         total_duration = audio_segment.duration_seconds
 
-        # 2. Setup Avatar Clips (Loading directly from the Docker container files)
-        # Ensure your files on GitHub are named "idle.png" and "talk1.png"
-        idle_path = "/app/idle.png"
-        talk_paths = ["/app/talk1.png"]
+        # 2. Setup Avatar Clips (Loading frame1.png as idle, frame2-4 as talking)
+        idle_path = "/app/frame1.png"
         
-        # Check if a second talking frame exists for more dynamic movement
-        if os.path.exists("/app/talk2.png"):
-            talk_paths.append("/app/talk2.png")
-
         if not os.path.exists(idle_path):
-            return {"error": "Could not find /app/idle.png in the container. Make sure it is copied in the Dockerfile."}
+            return {"error": "Could not find /app/frame1.png in the container. Make sure it is copied in the Dockerfile and named exactly frame1.png"}
 
         idle_clip = mpy.ImageClip(idle_path).resize(height=720)
-        talk_clips = [mpy.ImageClip(p).resize(height=720) for p in talk_paths]
+        
+        # Dynamically load any additional frames (frame2, frame3, frame4, etc.)
+        talk_paths = []
+        for i in range(2, 10): 
+            f_path = f"/app/frame{i}.png"
+            if os.path.exists(f_path):
+                talk_paths.append(f_path)
+                
+        # If no extra frames exist, fallback to the auto-bounce simulation
+        if not talk_paths:
+            base_img = Image.open(idle_path)
+            shifted = base_img.crop((0, 10, base_img.width, base_img.height)).resize((base_img.width, base_img.height))
+            shifted_path = os.path.join(workdir, "shifted.png")
+            shifted.save(shifted_path)
+            talk_clips = [idle_clip, mpy.ImageClip(shifted_path).resize(height=720)]
+        else:
+            talk_clips = [mpy.ImageClip(p).resize(height=720) for p in talk_paths]
 
         # 3. Extract Speaking Intervals
         non_silent_ranges = silence.detect_nonsilent(
