@@ -2,7 +2,6 @@ FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-# Auto-agree to the open-source TTS terms of service
 ENV COQUI_TOS_AGREED=1 
 
 WORKDIR /app
@@ -25,6 +24,9 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# ULTIMATE OVERRIDE: Force the compatible version of transformers after everything else
+RUN pip install --no-cache-dir transformers==4.36.2
 
 # Copy your visual sprites and your voice sample
 COPY my_scene1.png /app/my_scene1.png
