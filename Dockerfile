@@ -25,14 +25,17 @@ RUN pip install torch torchvision torchaudio --index-url https://download.pytorc
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ULTIMATE OVERRIDE: Force the compatible version of transformers after everything else
+# OVERRIDE: Force the compatible version of transformers after everything else
 RUN pip install --no-cache-dir transformers==4.36.2
 
-# Copy your visual sprites and your voice sample
+# Copy your visual sprites
 COPY my_scene1.png /app/my_scene1.png
 COPY my_scene2.png /app/my_scene2.png
-#COPY my_scene3.png /app/my_scene3.png
-COPY my_voice.wav /app/my_voice.wav
+COPY my_scene3.png /app/my_scene3.png
+
+# Copy and automatically sanitize your voice sample into strict 16-bit PCM WAV
+COPY my_voice.wav /app/raw_voice.wav
+RUN ffmpeg -i /app/raw_voice.wav -acodec pcm_s16le -ar 22050 -ac 1 /app/my_voice.wav
 
 COPY handler.py .
 
