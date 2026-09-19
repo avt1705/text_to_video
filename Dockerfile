@@ -18,22 +18,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -L -o /app/NotoSansDevanagari.ttf "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari-Bold.ttf"
 
 RUN python3 -m pip install --upgrade pip wheel
-
-# Install PyTorch for GPU acceleration
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# OVERRIDE: Force the compatible version of transformers after everything else
+# Force the compatible version of transformers
 RUN pip install --no-cache-dir transformers==4.36.2
 
-# Copy your visual sprites
-COPY my_scene1.png /app/my_scene1.png
-COPY my_scene2.png /app/my_scene2.png
-#COPY my_scene3.png /app/my_scene3.png
+# Copy the 5-frame sprite sheet
+COPY Gemini_Generated_Image_g4q3nwg4q3nwg4q3.png /app/sprite_sheet.png
 
-# Copy and automatically sanitize your voice sample into strict 16-bit PCM WAV
+# Copy and automatically sanitize your 15-second voice sample
 COPY my_voice.wav /app/raw_voice.wav
 RUN ffmpeg -i /app/raw_voice.wav -acodec pcm_s16le -ar 22050 -ac 1 /app/my_voice.wav
 
