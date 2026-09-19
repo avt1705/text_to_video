@@ -18,3 +18,4 @@ librosa==0.10.1
 opencv-python-headless==4.9.0.80
 tqdm==4.66.2
 setuptools<70.0.0
+gTTS==2.5.1
