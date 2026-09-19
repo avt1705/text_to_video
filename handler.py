@@ -1,7 +1,5 @@
 import os
 import re
-import asyncio
-import threading
 import base64
 import textwrap
 import traceback
@@ -11,7 +9,6 @@ from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
 from pydub import AudioSegment, silence
-import edge_tts
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save as el_save
 
@@ -47,33 +44,36 @@ def generate_instructor_image(prompt: str, save_path: str):
     img = result.images[0].resize((512, 512))
     img.save(save_path)
 
-async def generate_edge_tts(text: str, output_path: str):
-    communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural", rate="+0%")
-    await communicate.save(output_path)
-
-def run_async_in_thread(coro):
-    """Executes an async coroutine in a separate thread to avoid RunPod event loop conflicts."""
-    def run_and_save():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-        loop.close()
-    
-    t = threading.Thread(target=run_and_save)
-    t.start()
-    t.join()
-
 def generate_audio(script: str, output_path: str, api_key: str = None):
+    # 1. Try ElevenLabs if a key is provided
     if api_key:
         try:
+            log("Attempting ElevenLabs TTS generation...")
             client = ElevenLabs(api_key=api_key)
             audio = client.generate(text=script, voice="Rachel", model="eleven_multilingual_v2")
             el_save(audio, output_path)
-            return
-        except Exception as e:
-            log(f"ElevenLabs failed: {e}")
             
-    run_async_in_thread(generate_edge_tts(script, output_path))
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                log("ElevenLabs audio generated successfully.")
+                return
+            else:
+                log("ElevenLabs file was empty. Falling back to Edge TTS.")
+        except Exception as e:
+            log(f"ElevenLabs generation failed: {e}. Falling back to Edge TTS.")
+            
+    # 2. Fallback / Default: Use Edge TTS via synchronous subprocess (No asyncio)
+    log("Running Edge TTS generation via CLI...")
+    cmd = [
+        "edge-tts", 
+        "--text", script, 
+        "--voice", "hi-IN-MadhurNeural", 
+        "--write-media", output_path
+    ]
+    subprocess.run(cmd, check=True)
+    
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise RuntimeError("TTS engine failed to write the MP3 file.")
+    log("TTS audio successfully saved.")
 
 def run_wav2lip(face_path: str, audio_path: str, output_path: str):
     cmd = [
@@ -123,7 +123,7 @@ def handler(event):
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
         
-        # Two separate audio paths handle the conversion safely
+        # Audio paths safely isolated for format conversion
         audio_mp3_path = os.path.join(workdir, "speech.mp3")
         audio_wav_path = os.path.join(workdir, "speech.wav")
         
@@ -132,21 +132,18 @@ def handler(event):
         final_video_path = os.path.join(workdir, "final.mp4")
         
         log("Generating TTS audio...")
-        # 1. Save the raw API output as an MP3
         generate_audio(script, audio_mp3_path, elevenlabs_key)
         
-        # 2. Load the MP3 safely
         audio_segment = AudioSegment.from_file(audio_mp3_path)
         total_duration = audio_segment.duration_seconds
         
-        # 3. Export as a clean 16kHz Mono WAV specifically for Wav2Lip
+        # Exact 16kHz Mono format required by Wav2Lip
         audio_segment.set_frame_rate(16000).set_channels(1).export(audio_wav_path, format="wav")
         
         log("Generating avatar image...")
         generate_instructor_image(char_prompt, face_path)
         
         log("Executing Wav2Lip animation...")
-        # 4. Pass the newly converted clean WAV to Wav2Lip
         run_wav2lip(face_path, audio_wav_path, animated_avatar_path)
         
         chunks = silence.split_on_silence(
