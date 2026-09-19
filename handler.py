@@ -59,22 +59,23 @@ def handler(event):
         audio_segment = AudioSegment.from_file(audio_path)
         total_duration = audio_segment.duration_seconds
 
-        # 2. Setup Avatar Clips (Loading frame1.png as idle, frame2-4 as talking)
+        # 2. Setup Avatar Clips (Loading from the Docker /app/ folder)
+        # We explicitly look for frame1.png as the idle/silent frame
         idle_path = "/app/frame1.png"
         
         if not os.path.exists(idle_path):
-            return {"error": "Could not find /app/frame1.png in the container. Make sure it is copied in the Dockerfile and named exactly frame1.png"}
+            return {"error": f"Could not find {idle_path} inside the container. Check that the file on GitHub is exactly named 'frame1.png' (lowercase)."}
 
         idle_clip = mpy.ImageClip(idle_path).resize(height=720)
         
-        # Dynamically load any additional frames (frame2, frame3, frame4, etc.)
+        # Look for frame2.png, frame3.png, frame4.png for talking animations
         talk_paths = []
-        for i in range(2, 10): 
+        for i in range(2, 6): 
             f_path = f"/app/frame{i}.png"
             if os.path.exists(f_path):
                 talk_paths.append(f_path)
                 
-        # If no extra frames exist, fallback to the auto-bounce simulation
+        # If no other frames are found, make a fake talking frame by shifting frame1
         if not talk_paths:
             base_img = Image.open(idle_path)
             shifted = base_img.crop((0, 10, base_img.width, base_img.height)).resize((base_img.width, base_img.height))
@@ -101,11 +102,11 @@ def handler(event):
             volume = chunk.rms 
             
             if volume > 3500:       
-                dynamic_interval = 0.2  # Fast speaking
+                dynamic_interval = 0.2
             elif volume > 1000:     
-                dynamic_interval = 0.4  # Normal speaking
+                dynamic_interval = 0.4
             else:                   
-                dynamic_interval = 0.7  # Slow / quiet
+                dynamic_interval = 0.7
                 
             frame_idx = int((t / dynamic_interval) % len(talk_clips))
             return talk_clips[frame_idx].get_frame(0)
