@@ -8,156 +8,149 @@ from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
 from pydub import AudioSegment, silence
+from gtts import gTTS
 
-FONT_PATH = "/app/NotoSansDevanagari.ttf"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def log(*args):
-    print(*args, flush=True)
 
-def split_sentences(text: str):
-    parts = re.split(r'[।.!?\n]+', text)
-    return [p.strip() for p in parts if p.strip()]
+def find_file(filename):
+    """Searches multiple paths so assets are located regardless of mount location."""
+    search_paths = [
+        os.path.join(BASE_DIR, filename),
+        os.path.join("/app", filename),
+        os.path.join(os.getcwd(), filename)
+    ]
+    for path in search_paths:
+        if os.path.exists(path):
+            return path
+    return None
 
-def create_subtitle_frame(text: str, width=1280, height=200):
-    img = Image.new("RGBA", (width, height), (10, 15, 25, 230))
+
+def get_speaking_intervals(audio_path):
+    """Detects speaking vs silence intervals in the audio using pydub."""
+    audio = AudioSegment.from_file(audio_path)
+    total_dur = len(audio) / 1000.0
+    nonsilent_ranges = silence.detect_nonsilent(
+        audio,
+        min_silence_len=200,
+        silence_thresh=audio.dBFS - 16
+    )
+    if not nonsilent_ranges:
+        return [(0.0, total_dur)], total_dur
+    intervals = [(start / 1000.0, end / 1000.0) for start, end in nonsilent_ranges]
+    return intervals, total_dur
+
+
+def create_subtitle_clip(text, duration, font_path):
+    """Renders wrapped Hindi Devanagari text on a semi-transparent slate banner."""
+    width, height = 1080, 180
+    img = Image.new("RGBA", (width, height), (15, 23, 42, 220))
     draw = ImageDraw.Draw(img)
+
     try:
-        font = ImageFont.truetype(FONT_PATH, 42)
+        font = ImageFont.truetype(font_path, 34) if font_path else ImageFont.load_default()
     except Exception:
         font = ImageFont.load_default()
 
-    wrapped_text = "\n".join(textwrap.wrap(text, width=45))
-    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=10)
+    wrapped = "\n".join(textwrap.wrap(text, width=42))
+    bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=6)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    pos_x = (width - text_w) // 2
-    pos_y = (height - text_h) // 2
+    draw.multiline_text(
+        ((width - text_w) // 2, (height - text_h) // 2),
+        wrapped,
+        font=font,
+        fill=(255, 255, 255),
+        align="center",
+        spacing=6
+    )
+    return mpy.ImageClip(np.array(img)).set_duration(duration).set_position(("center", "bottom"))
 
-    draw.multiline_text((pos_x, pos_y), wrapped_text, font=font, fill=(255, 255, 255), align="center", spacing=10)
-    return np.array(img)
 
 def handler(event):
     try:
-        input_data = event.get("input", {})
-        script = input_data.get("script", "").strip()
-        audio_b64 = input_data.get("audio_base64", "")
-
-        if not script or not audio_b64:
-            return {"error": "Missing script or audio inputs."}
-
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
-        
+
         audio_path = os.path.join(workdir, "speech.mp3")
-        video_output_path = os.path.join(workdir, "final.mp4")
+        final_video_path = os.path.join(workdir, "final.mp4")
 
-        # 1. Decode & Save Audio
-        with open(audio_path, "wb") as f:
-            f.write(base64.b64decode(audio_b64))
-            
-        audio_segment = AudioSegment.from_file(audio_path)
-        total_duration = audio_segment.duration_seconds
+        input_data = event.get("input", {})
+        audio_base64 = input_data.get("audio_base64", "")
+        script = input_data.get("script", "").strip()
 
-        # 2. Setup Avatar Clips (Loading from the Docker /app/ folder)
-        # We explicitly look for frame1.png as the idle/silent frame
-        idle_path = "/app/frame1.png"
-        
-        if not os.path.exists(idle_path):
-            return {"error": f"Could not find {idle_path} inside the container. Check that the file on GitHub is exactly named 'frame1.png' (lowercase)."}
-
-        idle_clip = mpy.ImageClip(idle_path).resize(height=720)
-        
-        # Look for frame2.png, frame3.png, frame4.png for talking animations
-        talk_paths = []
-        for i in range(2, 6): 
-            f_path = f"/app/frame{i}.png"
-            if os.path.exists(f_path):
-                talk_paths.append(f_path)
-                
-        # If no other frames are found, make a fake talking frame by shifting frame1
-        if not talk_paths:
-            base_img = Image.open(idle_path)
-            shifted = base_img.crop((0, 10, base_img.width, base_img.height)).resize((base_img.width, base_img.height))
-            shifted_path = os.path.join(workdir, "shifted.png")
-            shifted.save(shifted_path)
-            talk_clips = [idle_clip, mpy.ImageClip(shifted_path).resize(height=720)]
+        # Step 1: Obtain Audio (via Base64 or gTTS synthesis)
+        if audio_base64:
+            with open(audio_path, "wb") as f:
+                f.write(base64.b64decode(audio_base64))
+        elif script:
+            print("Synthesizing Hindi TTS from script...", flush=True)
+            tts = gTTS(text=script, lang="hi", slow=False)
+            tts.save(audio_path)
         else:
-            talk_clips = [mpy.ImageClip(p).resize(height=720) for p in talk_paths]
+            default_voice = find_file("my_voice.wav")
+            if default_voice:
+                audio_path = default_voice
+            else:
+                return {"error": "No 'script' or 'audio_base64' provided, and my_voice.wav is missing."}
 
-        # 3. Extract Speaking Intervals
-        non_silent_ranges = silence.detect_nonsilent(
-            audio_segment, min_silence_len=300, silence_thresh=audio_segment.dBFS - 14
-        )
-        speaking_intervals = [(start / 1000.0, end / 1000.0) for start, end in non_silent_ranges]
+        # Step 2: Detect Speech Intervals
+        speaking_intervals, total_dur = get_speaking_intervals(audio_path)
 
-        # 4. Audio-Reactive Logic
+        # Step 3: Locate Frame Assets
+        frame_files = ["frame1.png", "frame2.png", "frame3.png", "frame4.png"]
+        resolved_frames = []
+        for name in frame_files:
+            resolved = find_file(name)
+            if not resolved:
+                return {"error": f"Missing frame asset: {name}"}
+            resolved_frames.append(resolved)
+
+        clips = [mpy.ImageClip(f).resize(width=1080) for f in resolved_frames]
+        idle_clip = clips[0]
+        talk_clips = clips[1:]
+
+        # Step 4: Animate Avatar Based on Speech
         def make_frame(t):
             is_speaking = any(start <= t <= end for start, end in speaking_intervals)
-            if not is_speaking:
-                return idle_clip.get_frame(0)
-                
-            ms = int(t * 1000)
-            chunk = audio_segment[max(0, ms-50) : ms+50]
-            volume = chunk.rms 
-            
-            if volume > 3500:       
-                dynamic_interval = 0.2
-            elif volume > 1000:     
-                dynamic_interval = 0.4
-            else:                   
-                dynamic_interval = 0.7
-                
-            frame_idx = int((t / dynamic_interval) % len(talk_clips))
-            return talk_clips[frame_idx].get_frame(0)
+            if is_speaking:
+                # Slower animation interval (0.4) applied here to stop rapid frame switching
+                frame_idx = int((t / 0.4) % len(talk_clips))
+                return talk_clips[frame_idx].get_frame(0)
+            return idle_clip.get_frame(0)
 
-        avatar_clip = mpy.VideoClip(make_frame, duration=total_duration).set_position(("center", "center"))
-        bg_clip = mpy.ColorClip(size=(1280, 720), color=(0, 0, 0)).set_duration(total_duration)
+        avatar_clip = mpy.VideoClip(make_frame, duration=total_dur)
 
-        # 5. Process Subtitles
-        chunks = silence.split_on_silence(
-            audio_segment, min_silence_len=400, silence_thresh=audio_segment.dBFS - 14, keep_silence=200
-        )
-        if not chunks:
-            chunks = [audio_segment]
+        # Step 5: Optional Subtitle Overlay
+        font_path = find_file("NotoSansDevanagari.ttf")
+        if script and font_path:
+            sub_clip = create_subtitle_clip(script, total_dur, font_path)
+            final_clip = mpy.CompositeVideoClip([avatar_clip, sub_clip])
+        else:
+            final_clip = avatar_clip
 
-        sentences = split_sentences(script)
-        subtitle_clips = []
-        current_time = 0.0
-        
-        for idx, chunk in enumerate(chunks):
-            duration = chunk.duration_seconds
-            subtitle_text = sentences[idx] if idx < len(sentences) else ""
-            
-            if subtitle_text:
-                sub_frame = create_subtitle_frame(subtitle_text)
-                sub_clip = (
-                    mpy.ImageClip(sub_frame)
-                    .set_duration(duration)
-                    .set_start(current_time)
-                    .set_position(("center", "bottom"))
-                )
-                subtitle_clips.append(sub_clip)
-            current_time += duration
-
-        # 6. Compose & Render
-        final_video = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips])
-        final_video = final_video.set_audio(mpy.AudioFileClip(audio_path))
-
-        log("Encoding output MP4...")
+        # Step 6: Render and Encode Output
+        final_video = final_clip.set_audio(mpy.AudioFileClip(audio_path))
         final_video.write_videofile(
-            video_output_path, fps=24, codec="libx264", audio_codec="aac",
-            ffmpeg_params=["-crf", "26", "-preset", "fast"], verbose=False, logger=None
+            final_video_path,
+            fps=24,
+            codec="libx264",
+            audio_codec="aac",
+            logger=None,
+            verbose=False
         )
 
-        with open(video_output_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("utf-8")
+        with open(final_video_path, "rb") as f:
+            encoded_video = base64.b64encode(f.read()).decode("utf-8")
 
-        return {"output": {"video_base64": encoded}}
+        return {"output": {"video_base64": encoded_video}}
 
     except Exception as e:
-        log("Error in handler execution:", traceback.format_exc())
+        print("Execution Error:", traceback.format_exc(), flush=True)
         return {"error": str(e), "trace": traceback.format_exc()}
 
+
 if __name__ == "__main__":
+    print("Starting RunPod Serverless Handler...", flush=True)
     runpod.serverless.start({"handler": handler})
