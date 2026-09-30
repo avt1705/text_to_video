@@ -5,4 +5,4 @@ imageio==2.34.0
 imageio-ffmpeg==0.4.9
 numpy==1.26.4
 Pillow==9.5.0
-gTTS==2.5.1
+edge-tts==2.0.4
