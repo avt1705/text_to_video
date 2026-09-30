@@ -3,6 +3,6 @@ runpod>=1.6.0
 moviepy==1.0.3
 imageio==2.34.0
 imageio-ffmpeg==0.4.9
-pydub==0.25.1
+numpy==1.26.4
 Pillow==9.5.0
 gTTS==2.5.1
