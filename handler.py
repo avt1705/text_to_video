@@ -4,13 +4,14 @@ import urllib.request
 import base64
 import textwrap
 import traceback
+import asyncio
+import edge_tts
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
-from gtts import gTTS
 
-# Using only the 2 standard storytelling frames
+# Strictly pointing to your .png GitHub assets
 SCENE1_PATH = "/app/my_scene1.png" # Closed (Silence)
 SCENE2_PATH = "/app/my_scene2.png" # Mid (Talking)
 
@@ -56,7 +57,8 @@ def handler(event):
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
 
-        audio_path = os.path.join(workdir, "speech.mp3")
+        # Output to .wav to prevent moviepy buffer index crashes
+        audio_path = os.path.join(workdir, "speech.wav") 
         final_video_path = os.path.join(workdir, "final.mp4")
 
         input_data = event.get("input", {})
@@ -76,21 +78,31 @@ def handler(event):
 
         # 1. Obtain Audio & Generate Timed Subtitles
         if audio_base64:
-            with open(audio_path, "wb") as f:
+            temp_mp3 = os.path.join(workdir, "uploaded.mp3")
+            with open(temp_mp3, "wb") as f:
                 f.write(base64.b64decode(audio_base64))
+            
+            # Convert uploaded audio to clean wav format
+            mpy.AudioFileClip(temp_mp3).write_audiofile(audio_path, logger=None)
             audio_dur = mpy.AudioFileClip(audio_path).duration
+            
             if script:
                 subtitle_clips.append(create_right_side_subtitle(script, audio_dur, 0.0))
         else:
             sentences = [s.strip() for s in re.split(r'[।.\n]+', script) if s.strip()]
             current_time = 0.0
             
-            print("Generating line-by-line audio and subtitles...", flush=True)
+            print("Generating human-like line-by-line audio...", flush=True)
             for i, sentence in enumerate(sentences):
                 chunk_path = os.path.join(workdir, f"chunk_{i}.mp3")
                 
-                tts = gTTS(text=sentence, lang="hi", slow=False)
-                tts.save(chunk_path)
+                # Async wrapper for edge-tts
+                async def generate_tts():
+                    communicate = edge_tts.Communicate(sentence, "hi-IN-MadhurNeural")
+                    await communicate.save(chunk_path)
+                
+                # Execute safely inside the sync handler
+                asyncio.run(generate_tts())
                 
                 audio_chunk = mpy.AudioFileClip(chunk_path)
                 dur = audio_chunk.duration
@@ -99,10 +111,11 @@ def handler(event):
                 subtitle_clips.append(create_right_side_subtitle(sentence, dur, current_time))
                 current_time += dur
                 
+            # Writes safely as .wav to protect the volume analyzer
             final_audio = mpy.concatenate_audioclips(audio_clips)
             final_audio.write_audiofile(audio_path, logger=None)
 
-        # 2. Verify Frame Assets (Only Scene 1 and 2 needed now)
+        # 2. Verify Frame Assets
         for path in [SCENE1_PATH, SCENE2_PATH]:
             if not os.path.exists(path):
                 return {"error": f"Missing frame asset. Checked {path}"}
@@ -127,7 +140,6 @@ def handler(event):
                 return f1
             
             vol = audio_array[frame_idx]
-            # Simple binary toggle: silence vs speaking
             if vol < 0.04:  
                 return f1
             else:             
