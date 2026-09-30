@@ -11,8 +11,8 @@ import moviepy.editor as mpy
 from gtts import gTTS
 
 # Using only the 2 standard storytelling frames
-SCENE1_PATH = "/app/my_scene1.jpg" # Closed (Silence)
-SCENE2_PATH = "/app/my_scene2.jpg" # Mid (Talking)
+SCENE1_PATH = "/app/my_scene1.png" # Closed (Silence)
+SCENE2_PATH = "/app/my_scene2.png" # Mid (Talking)
 
 def get_hindi_font(size=46):
     font_path = "/tmp/runpod_job/NotoSansDevanagari-Regular.ttf"
