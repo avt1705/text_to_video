@@ -11,9 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 import runpod
 import moviepy.editor as mpy
 
-# Strictly pointing to your .png GitHub assets
-SCENE1_PATH = "/app/my_scene1.png" # Closed (Silence)
-SCENE2_PATH = "/app/my_scene2.png" # Mid (Talking)
+SCENE1_PATH = "/app/my_scene1.png" 
+SCENE2_PATH = "/app/my_scene2.png" 
 
 def get_hindi_font(size=46):
     font_path = "/tmp/runpod_job/NotoSansDevanagari-Regular.ttf"
@@ -26,7 +25,6 @@ def get_hindi_font(size=46):
     return ImageFont.truetype(font_path, size)
 
 def create_right_side_subtitle(text, duration, start_time):
-    """Renders text specifically for the right half of a 1920x1080 screen."""
     width, height = 960, 1080
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -57,7 +55,6 @@ def handler(event):
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
 
-        # Output to .wav to prevent moviepy buffer index crashes
         audio_path = os.path.join(workdir, "speech.wav") 
         final_video_path = os.path.join(workdir, "final.mp4")
 
@@ -76,13 +73,11 @@ def handler(event):
         subtitle_clips = []
         audio_clips = []
 
-        # 1. Obtain Audio & Generate Timed Subtitles
         if audio_base64:
             temp_mp3 = os.path.join(workdir, "uploaded.mp3")
             with open(temp_mp3, "wb") as f:
                 f.write(base64.b64decode(audio_base64))
             
-            # Convert uploaded audio to clean wav format
             mpy.AudioFileClip(temp_mp3).write_audiofile(audio_path, logger=None)
             audio_dur = mpy.AudioFileClip(audio_path).duration
             
@@ -96,12 +91,10 @@ def handler(event):
             for i, sentence in enumerate(sentences):
                 chunk_path = os.path.join(workdir, f"chunk_{i}.mp3")
                 
-                # Async wrapper for edge-tts
                 async def generate_tts():
                     communicate = edge_tts.Communicate(sentence, "hi-IN-MadhurNeural")
                     await communicate.save(chunk_path)
                 
-                # Execute safely inside the sync handler
                 asyncio.run(generate_tts())
                 
                 audio_chunk = mpy.AudioFileClip(chunk_path)
@@ -111,21 +104,21 @@ def handler(event):
                 subtitle_clips.append(create_right_side_subtitle(sentence, dur, current_time))
                 current_time += dur
                 
-            # Writes safely as .wav to protect the volume analyzer
             final_audio = mpy.concatenate_audioclips(audio_clips)
-            final_audio.write_audiofile(audio_path, logger=None)
+            final_audio.write_audiofile(audio_path, logger=None) 
 
-        # 2. Verify Frame Assets
         for path in [SCENE1_PATH, SCENE2_PATH]:
             if not os.path.exists(path):
                 return {"error": f"Missing frame asset. Checked {path}"}
 
-        # 3. 2-Frame Audio-Reactive Animation
         print("Analyzing audio volume for 2-frame lip-sync...", flush=True)
         audio_clip = mpy.AudioFileClip(audio_path)
         total_dur = audio_clip.duration
+        audio_fps = audio_clip.fps # Get the native audio sample rate (e.g., 24000 or 44100)
         
-        audio_array = audio_clip.to_soundarray(fps=24)
+        # Load the array without forcing the broken 24Hz reading
+        audio_array = audio_clip.to_soundarray()
+        
         if audio_array.ndim == 2:
             audio_array = np.max(np.abs(audio_array), axis=1) 
         else:
@@ -134,12 +127,21 @@ def handler(event):
         f1 = mpy.ImageClip(SCENE1_PATH).resize(height=1080).get_frame(0)
         f2 = mpy.ImageClip(SCENE2_PATH).resize(height=1080).get_frame(0)
 
+        # Calculate how many audio samples correspond to one video frame (1/24th of a second)
+        samples_per_frame = int(audio_fps / 24)
+
         def make_frame(t):
-            frame_idx = int(t * 24)
-            if frame_idx >= len(audio_array):
-                return f1
+            sample_idx = int(t * audio_fps)
             
-            vol = audio_array[frame_idx]
+            # Create a window to capture the peak volume around this exact timestamp
+            start_idx = max(0, sample_idx - (samples_per_frame // 2))
+            end_idx = min(len(audio_array), sample_idx + (samples_per_frame // 2))
+            
+            if start_idx >= end_idx:
+                return f1
+                
+            vol = np.max(audio_array[start_idx:end_idx])
+            
             if vol < 0.04:  
                 return f1
             else:             
@@ -148,14 +150,12 @@ def handler(event):
         avatar_clip = (mpy.VideoClip(make_frame, duration=total_dur)
                        .set_position(("left", "center")))
 
-        # 4. Composite 1920x1080 Side-by-Side Layout
         print("Compositing 1920x1080 final layout...", flush=True)
         bg_clip = mpy.ColorClip(size=(1920, 1080), color=(15, 23, 42), duration=total_dur)
         
         final_clip = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips], size=(1920, 1080))
         final_clip = final_clip.set_audio(audio_clip)
 
-        # 5. Render and Encode
         final_clip.write_videofile(
             final_video_path,
             fps=24,
