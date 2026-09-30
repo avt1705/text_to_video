@@ -4,6 +4,7 @@ import urllib.request
 import base64
 import textwrap
 import traceback
+import edge_tts
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import runpod
@@ -48,16 +49,15 @@ def create_right_side_subtitle(text, duration, start_time):
             .set_start(start_time)
             .set_position(("right", "center")))
 
-def handler(event):
+async def handler(event):
     try:
         workdir = "/tmp/runpod_job"
         os.makedirs(workdir, exist_ok=True)
 
-        audio_path = os.path.join(workdir, "raw_voice.wav") 
+        audio_path = os.path.join(workdir, "speech.wav") 
         final_video_path = os.path.join(workdir, "final.mp4")
 
         input_data = event.get("input", {})
-        audio_base64 = input_data.get("audio_base64", "")
         
         raw_script = input_data.get("script", "")
         if isinstance(raw_script, bytes):
@@ -65,39 +65,49 @@ def handler(event):
         
         script = raw_script.strip()
         
-        if not script or not audio_base64:
-            return {"error": "Both script and audio_base64 are required."}
+        if not script:
+            return {"error": "No script provided. Please send text."}
 
-        # 1. Load Custom Audio WITHOUT Re-encoding
-        with open(audio_path, "wb") as f:
-            f.write(base64.b64decode(audio_base64))
-            
-        audio_clip = mpy.AudioFileClip(audio_path)
-        total_dur = audio_clip.duration
-        audio_fps = audio_clip.fps 
-        
-        # 2. Proportional Line-by-Line Subtitle Sync
         subtitle_clips = []
+        audio_clips = []
+
+        # 1. Automated AI Voice Generation
+        # Split by newlines or full stops to separate the lines
         sentences = [s.strip() for s in re.split(r'[।.\n]+', script) if s.strip()]
         current_time = 0.0
         
-        total_chars = sum(len(s) for s in sentences)
-        
-        for sentence in sentences:
-            if total_chars == 0:
-                break
-            # Mathematically divide the screen time based on sentence length
-            dur = (len(sentence) / total_chars) * total_dur
+        print("Generating automated AI voice...", flush=True)
+        for i, sentence in enumerate(sentences):
+            chunk_path = os.path.join(workdir, f"chunk_{i}.mp3")
+            
+            # Strip commas purely for the audio generation to prevent long awkward pauses
+            tts_text = sentence.replace(',', '').replace(';', '').strip()
+            
+            communicate = edge_tts.Communicate(tts_text, "hi-IN-MadhurNeural")
+            await communicate.save(chunk_path)
+            
+            audio_chunk = mpy.AudioFileClip(chunk_path)
+            dur = audio_chunk.duration
+            audio_clips.append(audio_chunk)
+            
+            # Keep the original sentence (with commas) for the visible subtitles
             subtitle_clips.append(create_right_side_subtitle(sentence, dur, current_time))
             current_time += dur
+            
+        final_audio = mpy.concatenate_audioclips(audio_clips)
+        final_audio.write_audiofile(audio_path, logger=None) 
+        audio_clip = mpy.AudioFileClip(audio_path)
 
-        # 3. Verify Frame Assets
+        # 2. Verify Frame Assets
         for path in [SCENE1_PATH, SCENE2_PATH]:
             if not os.path.exists(path):
                 return {"error": f"Missing frame asset. Checked {path}"}
 
-        # 4. Audio Volume Analysis for 2-Frame Animation
-        print("Analyzing raw audio volume for 2-frame lip-sync...", flush=True)
+        # 3. Audio Volume Analysis for 2-Frame Animation
+        print("Analyzing audio volume for 2-frame lip-sync...", flush=True)
+        total_dur = audio_clip.duration
+        audio_fps = audio_clip.fps 
+        
         audio_array = audio_clip.to_soundarray()
         
         if audio_array.ndim == 2:
@@ -129,14 +139,14 @@ def handler(event):
         avatar_clip = (mpy.VideoClip(make_frame, duration=total_dur)
                        .set_position(("left", "center")))
 
-        # 5. Composite 1920x1080 Final Layout
+        # 4. Composite 1920x1080 Final Layout
         print("Compositing 1920x1080 final layout...", flush=True)
         bg_clip = mpy.ColorClip(size=(1920, 1080), color=(15, 23, 42), duration=total_dur)
         
         final_clip = mpy.CompositeVideoClip([bg_clip, avatar_clip, *subtitle_clips], size=(1920, 1080))
         final_clip = final_clip.set_audio(audio_clip)
 
-        # 6. Render and Encode
+        # 5. Render and Encode
         final_clip.write_videofile(
             final_video_path,
             fps=24,
@@ -156,5 +166,5 @@ def handler(event):
         return {"error": str(e), "trace": traceback.format_exc()}
 
 if __name__ == "__main__":
-    print("Starting Raw Audio Video Worker...", flush=True)
+    print("Starting AI Voice Video Worker...", flush=True)
     runpod.serverless.start({"handler": handler})
