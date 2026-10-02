@@ -1,23 +1,22 @@
 FROM python:3.10-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-# Install system dependencies for video rendering
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg curl \
+# Install system dependencies required for video rendering and fonts
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    wget \
+    fonts-noto \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin setuptools below 70 to prevent the pkg_resources crash
-RUN python3 -m pip install --upgrade pip "setuptools<70.0.0" wheel
+WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your handler script and PNG assets
-COPY . /app/
+# Copy your avatar frames and the handler script
+COPY my_scene1.png /app/my_scene1.png
+COPY my_scene2.png /app/my_scene2.png
+COPY handler.py /app/handler.py
 
-CMD ["python3", "-u", "handler.py"]
+# Start the RunPod serverless handler
+CMD ["python", "-u", "/app/handler.py"]
