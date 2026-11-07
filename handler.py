@@ -1,443 +1,492 @@
 import os
-import re
+import glob
 import base64
 import traceback
-import urllib.request
 
 import numpy as np
+import runpod
+
 from PIL import Image, ImageDraw, ImageFont
 
-import runpod
-import moviepy.editor as mpy
+from moviepy.editor import (
+    AudioFileClip,
+    ImageClip,
+    ColorClip,
+    CompositeVideoClip
+)
 
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
+# ================= CONFIGURATION =================
+
+WIDTH = 1920
+HEIGHT = 1080
+FPS = 30
 
 SCENE1_PATH = "/app/my_scene1.png"
 SCENE2_PATH = "/app/my_scene2.png"
 
-VIDEO_WIDTH = 1920
-VIDEO_HEIGHT = 1080
-VIDEO_FPS = 30
+OUTPUT_PATH = "/tmp/final_video.mp4"
+AUDIO_PATH = "/tmp/narration.mp3"
 
-WORKDIR = "/tmp/runpod_job"
-
-FONT_PATH = os.path.join(
-    WORKDIR,
-    "NotoSansDevanagari-Regular.ttf"
-)
+# =================================================
 
 
-# ==========================================
-# HINDI FONT
-# ==========================================
+# ================= HINDI FONT =================
 
-def get_hindi_font(size=48):
+def get_hindi_font():
 
-    os.makedirs(WORKDIR, exist_ok=True)
-
-    if not os.path.exists(FONT_PATH):
-
-        print("Downloading Hindi font...", flush=True)
-
-        url = (
-            "https://raw.githubusercontent.com/"
-            "google/fonts/main/ofl/notosansdevanagari/"
-            "NotoSansDevanagari%5Bwght%5D.ttf"
-        )
-
-        urllib.request.urlretrieve(url, FONT_PATH)
-
-    return ImageFont.truetype(FONT_PATH, size)
-
-
-# ==========================================
-# SPLIT SUBTITLES
-# ==========================================
-
-def split_script(script):
-
-    sentences = [
-        s.strip()
-        for s in re.split(r"[।.!?\n]+", script)
-        if s.strip()
+    font_paths = [
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf"
     ]
 
-    chunks = []
+    for path in font_paths:
 
-    for sentence in sentences:
+        if os.path.exists(path):
+            return path
 
-        words = sentence.split()
+    matches = glob.glob(
+        "/usr/share/fonts/**/*Devanagari*.ttf",
+        recursive=True
+    )
 
-        current_line = []
+    if matches:
+        return matches[0]
 
-        for word in words:
-
-            test_line = " ".join(current_line + [word])
-
-            if len(test_line) > 38 and current_line:
-
-                chunks.append(" ".join(current_line))
-
-                current_line = [word]
-
-            else:
-
-                current_line.append(word)
-
-        if current_line:
-
-            chunks.append(" ".join(current_line))
-
-    return chunks
+    raise RuntimeError(
+        "Hindi font not found. Please check fonts-noto in Dockerfile."
+    )
 
 
-# ==========================================
-# CREATE SUBTITLE IMAGE
-# ==========================================
+# ================= SUBTITLE IMAGE =================
 
 def create_subtitle_image(text):
 
-    width = 850
-    height = 420
-
-    img = Image.new(
+    image = Image.new(
         "RGBA",
-        (width, height),
+        (960, HEIGHT),
         (0, 0, 0, 0)
     )
 
-    draw = ImageDraw.Draw(img)
+    draw = ImageDraw.Draw(image)
 
-    # Rounded dark subtitle panel
+    font_path = get_hindi_font()
 
-    draw.rounded_rectangle(
-        (15, 15, width - 15, height - 15),
-        radius=35,
-        fill=(10, 18, 35, 225)
+    font = ImageFont.truetype(
+        font_path,
+        58
     )
 
-    font = get_hindi_font(48)
+    # Subtitle card
+
+    draw.rounded_rectangle(
+        (60, 320, 900, 760),
+        radius=35,
+        fill=(15, 23, 42, 235)
+    )
+
+    # Wrap subtitle according to available width
 
     words = text.split()
 
     lines = []
-    current = ""
+    current_line = ""
 
     for word in words:
 
-        test = current + " " + word if current else word
+        test_line = (
+            current_line + " " + word
+        ).strip()
 
-        if len(test) > 25 and current:
+        if draw.textlength(test_line, font=font) < 740:
 
-            lines.append(current)
-            current = word
+            current_line = test_line
 
         else:
 
-            current = test
+            if current_line:
+                lines.append(current_line)
 
-    if current:
-        lines.append(current)
+            current_line = word
 
-    final_text = "\n".join(lines)
+    if current_line:
+        lines.append(current_line)
 
-    bbox = draw.multiline_textbbox(
-        (0, 0),
-        final_text,
-        font=font,
-        spacing=22,
-        align="center"
+    # Draw text
+
+    line_height = 85
+
+    total_height = len(lines) * line_height
+
+    start_y = (
+        HEIGHT // 2 - total_height // 2
     )
 
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    for line in lines:
 
-    x = (width - text_width) // 2
-    y = (height - text_height) // 2
-
-    draw.multiline_text(
-        (x, y),
-        final_text,
-        font=font,
-        fill=(255, 255, 255, 255),
-        spacing=22,
-        align="center",
-        stroke_width=1,
-        stroke_fill=(0, 0, 0)
-    )
-
-    return np.array(img)
-
-
-# ==========================================
-# CREATE SUBTITLE CLIPS
-# ==========================================
-
-def create_subtitles(script, total_duration):
-
-    chunks = split_script(script)
-
-    if not chunks:
-        return []
-
-    # Allocate duration proportionally to text length
-
-    weights = [max(len(text), 1) for text in chunks]
-
-    total_weight = sum(weights)
-
-    subtitle_clips = []
-
-    current_time = 0
-
-    for text, weight in zip(chunks, weights):
-
-        duration = total_duration * weight / total_weight
-
-        subtitle_image = create_subtitle_image(text)
-
-        clip = (
-            mpy.ImageClip(subtitle_image)
-            .set_duration(duration)
-            .set_start(current_time)
-            .set_position((1010, 330))
+        bbox = draw.textbbox(
+            (0, 0),
+            line,
+            font=font
         )
 
-        subtitle_clips.append(clip)
+        text_width = bbox[2] - bbox[0]
 
-        current_time += duration
+        x = (960 - text_width) // 2
 
-    return subtitle_clips
+        draw.text(
+            (x, start_y),
+            line,
+            font=font,
+            fill="white"
+        )
+
+        start_y += line_height
+
+    return np.array(image)
 
 
-# ==========================================
-# MAIN HANDLER
-# ==========================================
+# ================= AUDIO ANALYSIS =================
+
+def get_audio_envelope(audio_clip):
+
+    duration = audio_clip.duration
+
+    sample_rate = 8000
+
+    audio_array = audio_clip.to_soundarray(
+        fps=sample_rate
+    )
+
+    if audio_array.ndim == 2:
+
+        audio_array = np.mean(
+            audio_array,
+            axis=1
+        )
+
+    samples_per_frame = max(
+        1,
+        int(sample_rate / FPS)
+    )
+
+    frame_count = int(duration * FPS) + 1
+
+    envelope = []
+
+    for i in range(frame_count):
+
+        start = i * samples_per_frame
+
+        end = start + samples_per_frame
+
+        chunk = audio_array[start:end]
+
+        if len(chunk) == 0:
+            envelope.append(0)
+        else:
+            rms = np.sqrt(
+                np.mean(chunk ** 2)
+            )
+
+            envelope.append(rms)
+
+    return envelope
+
+
+# ================= AVATAR ANIMATION =================
+
+def create_avatar_clips(envelope, duration):
+
+    closed = Image.open(
+        SCENE1_PATH
+    ).convert("RGBA")
+
+    opened = Image.open(
+        SCENE2_PATH
+    ).convert("RGBA")
+
+    # Resize avatar to fit left side
+
+    closed.thumbnail((900, 950))
+
+    opened = opened.resize(
+        closed.size,
+        Image.Resampling.LANCZOS
+    )
+
+    avatar_width, avatar_height = closed.size
+
+    x_position = (960 - avatar_width) // 2
+
+    y_position = (HEIGHT - avatar_height) // 2
+
+    closed_array = np.array(closed)
+
+    opened_array = np.array(opened)
+
+    clips = []
+
+    # Group consecutive frames with the same mouth state
+
+    current_state = None
+    segment_start = 0
+
+    frame_count = min(
+        len(envelope),
+        int(duration * FPS) + 1
+    )
+
+    for frame in range(frame_count):
+
+        # Adjust this threshold if mouth movement is too frequent.
+
+        mouth_open = envelope[frame] > 0.015
+
+        state = "open" if mouth_open else "closed"
+
+        if current_state is None:
+
+            current_state = state
+            segment_start = frame
+
+        elif state != current_state:
+
+            start_time = segment_start / FPS
+
+            end_time = frame / FPS
+
+            image_array = (
+                opened_array
+                if current_state == "open"
+                else closed_array
+            )
+
+            clip = (
+                ImageClip(image_array)
+                .set_start(start_time)
+                .set_duration(end_time - start_time)
+                .set_position((x_position, y_position))
+            )
+
+            clips.append(clip)
+
+            current_state = state
+
+            segment_start = frame
+
+    # Add final segment
+
+    if current_state is not None:
+
+        start_time = segment_start / FPS
+
+        image_array = (
+            opened_array
+            if current_state == "open"
+            else closed_array
+        )
+
+        clip = (
+            ImageClip(image_array)
+            .set_start(start_time)
+            .set_duration(max(0.01, duration - start_time))
+            .set_position((x_position, y_position))
+        )
+
+        clips.append(clip)
+
+    return clips
+
+
+# ================= MAIN HANDLER =================
 
 def handler(event):
 
     try:
 
-        os.makedirs(WORKDIR, exist_ok=True)
-
-        final_video_path = os.path.join(
-            WORKDIR,
-            "final.mp4"
-        )
-
-        audio_path = os.path.join(
-            WORKDIR,
-            "input_speech.mp3"
-        )
-
         input_data = event.get("input", {})
 
-        # ----------------------------------
-        # 1. LOAD AUDIO
-        # ----------------------------------
+        script = input_data.get("script")
 
-        audio_b64 = input_data.get("audio_base64", "")
+        audio_base64 = input_data.get("audio_base64")
 
-        if not audio_b64:
+        if not script:
 
             return {
-                "error": "Missing audio_base64"
+                "error": "No script provided."
             }
 
-        with open(audio_path, "wb") as f:
+        if not audio_base64:
 
-            f.write(base64.b64decode(audio_b64))
+            return {
+                "error": "No audio_base64 provided."
+            }
 
-        audio_clip = mpy.AudioFileClip(audio_path)
+        if not os.path.exists(SCENE1_PATH):
 
-        total_duration = audio_clip.duration
+            return {
+                "error": "Closed-mouth avatar image not found."
+            }
 
-        # ----------------------------------
-        # 2. LOAD SCRIPT
-        # ----------------------------------
+        if not os.path.exists(SCENE2_PATH):
 
-        raw_script = input_data.get("script", "")
+            return {
+                "error": "Open-mouth avatar image not found."
+            }
 
-        if isinstance(raw_script, bytes):
+        # STEP 1: Decode ElevenLabs audio
 
-            raw_script = raw_script.decode("utf-8")
-
-        script = raw_script.strip()
-
-        subtitle_clips = create_subtitles(
-            script,
-            total_duration
+        audio_bytes = base64.b64decode(
+            audio_base64,
+            validate=True
         )
 
-        # ----------------------------------
-        # 3. LOAD AVATAR FRAMES
-        # ----------------------------------
+        with open(AUDIO_PATH, "wb") as f:
 
-        scene1 = (
-            mpy.ImageClip(SCENE1_PATH)
-            .resize(height=950)
-            .get_frame(0)
+            f.write(audio_bytes)
+
+        audio_clip = AudioFileClip(
+            AUDIO_PATH
         )
 
-        scene2 = (
-            mpy.ImageClip(SCENE2_PATH)
-            .resize(height=950)
-            .get_frame(0)
+        duration = audio_clip.duration
+
+        if duration <= 0:
+
+            raise RuntimeError("Audio duration is invalid.")
+
+        # STEP 2: Analyze audio
+
+        envelope = get_audio_envelope(
+            audio_clip
         )
 
-        # ----------------------------------
-        # 4. ANALYZE AUDIO
-        # ----------------------------------
+        # STEP 3: Create background
 
-        print(
-            "Analyzing audio for avatar animation...",
-            flush=True
+        background = ColorClip(
+            size=(WIDTH, HEIGHT),
+            color=(15, 23, 42)
+        ).set_duration(duration)
+
+        # STEP 4: Create avatar animation
+
+        avatar_clips = create_avatar_clips(
+            envelope,
+            duration
         )
 
-        audio_array = audio_clip.to_soundarray()
+        # STEP 5: Create subtitles
 
-        if audio_array.ndim == 2:
+        lines = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip()
+        ]
 
-            audio_array = np.mean(
-                audio_array,
-                axis=1
+        if not lines:
+            lines = [script.strip()]
+
+        total_characters = sum(
+            max(1, len(line))
+            for line in lines
+        )
+
+        subtitle_clips = []
+
+        current_time = 0
+
+        for line in lines:
+
+            line_duration = (
+                duration * len(line) / total_characters
             )
 
-        audio_array = np.abs(audio_array)
-
-        samples_per_frame = int(
-            audio_clip.fps / VIDEO_FPS
-        )
-
-        def make_frame(t):
-
-            sample_idx = int(
-                t * audio_clip.fps
+            subtitle_image = create_subtitle_image(
+                line
             )
 
-            start_idx = max(
-                0,
-                sample_idx - samples_per_frame // 2
+            subtitle_clip = (
+                ImageClip(subtitle_image)
+                .set_start(current_time)
+                .set_duration(line_duration)
+                .set_position((960, 0))
             )
 
-            end_idx = min(
-                len(audio_array),
-                sample_idx + samples_per_frame // 2
+            subtitle_clips.append(
+                subtitle_clip
             )
 
-            if start_idx >= end_idx:
+            current_time += line_duration
 
-                return scene1
+        # STEP 6: Combine video and audio
 
-            segment = audio_array[
-                start_idx:end_idx
-            ]
-
-            rms = np.sqrt(
-                np.mean(segment ** 2)
-            )
-
-            if rms > 0.025:
-
-                return scene2
-
-            return scene1
-
-        # ----------------------------------
-        # 5. CREATE BACKGROUND
-        # ----------------------------------
-
-        bg_clip = mpy.ColorClip(
-            size=(VIDEO_WIDTH, VIDEO_HEIGHT),
-            color=(15, 23, 42),
-            duration=total_duration
-        )
-
-        # ----------------------------------
-        # 6. CREATE AVATAR
-        # ----------------------------------
-
-        avatar_clip = (
-            mpy.VideoClip(
-                make_frame,
-                duration=total_duration
-            )
-            .set_position((40, 65))
-        )
-
-        # ----------------------------------
-        # 7. COMBINE EVERYTHING
-        # ----------------------------------
-
-        final_clip = mpy.CompositeVideoClip(
+        final_video = CompositeVideoClip(
             [
-                bg_clip,
-                avatar_clip,
+                background,
+                *avatar_clips,
                 *subtitle_clips
             ],
-            size=(VIDEO_WIDTH, VIDEO_HEIGHT)
-        ).set_audio(audio_clip)
-
-        # ----------------------------------
-        # 8. EXPORT VIDEO
-        # ----------------------------------
-
-        print(
-            "Rendering final video...",
-            flush=True
+            size=(WIDTH, HEIGHT)
         )
 
-        final_clip.write_videofile(
-            final_video_path,
-            fps=VIDEO_FPS,
+        final_video = final_video.set_audio(
+            audio_clip
+        )
+
+        # STEP 7: Render MP4
+
+        final_video.write_videofile(
+            OUTPUT_PATH,
+            fps=FPS,
             codec="libx264",
             audio_codec="aac",
-            preset="medium",
             bitrate="6000k",
-            logger=None,
-            verbose=False
+            preset="ultrafast",
+            threads=4,
+            logger=None
         )
 
-        # ----------------------------------
-        # 9. RETURN VIDEO
-        # ----------------------------------
+        # STEP 8: Return Base64 video
 
-        with open(final_video_path, "rb") as f:
+        with open(OUTPUT_PATH, "rb") as f:
 
-            encoded_video = base64.b64encode(
+            video_base64 = base64.b64encode(
                 f.read()
             ).decode("utf-8")
 
-        final_clip.close()
+        # Cleanup
+
+        final_video.close()
+
         audio_clip.close()
 
+        for clip in avatar_clips:
+            clip.close()
+
+        for clip in subtitle_clips:
+            clip.close()
+
+        background.close()
+
         return {
-            "output": {
-                "video_base64": encoded_video,
-                "duration": total_duration,
-                "resolution": "1920x1080",
-                "fps": VIDEO_FPS
-            }
+            "video_base64": video_base64,
+            "duration": duration,
+            "resolution": "1920x1080",
+            "fps": FPS
         }
 
     except Exception as e:
 
-        print(
-            f"Execution Error: {e}",
-            flush=True
-        )
+        traceback.print_exc()
 
         return {
-            "error": str(e),
-            "trace": traceback.format_exc()
+            "error": str(e)
         }
 
 
-if __name__ == "__main__":
+# ================= START RUNPOD =================
 
-    runpod.serverless.start({
-        "handler": handler
-    })
+runpod.serverless.start({
+    "handler": handler
+})
