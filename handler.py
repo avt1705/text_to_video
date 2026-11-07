@@ -1,93 +1,127 @@
 import os
-import re
+import io
+import time
 import base64
-import tempfile
 import logging
+import tempfile
+import subprocess
 
 import runpod
 import numpy as np
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageFont,
+    ImageOps
+)
 
 from moviepy.editor import (
     AudioFileClip,
     VideoClip
 )
 
+
 # =====================================================
-# CONFIGURATION
+# LOGGING
 # =====================================================
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
+# =====================================================
+# VIDEO CONFIGURATION
+# =====================================================
 
 WIDTH = 1920
 HEIGHT = 1080
+
 FPS = 30
 
+VIDEO_BITRATE = "4000k"
+
 ASSET_DIR = "/app"
+
+AVATAR_WIDTH = 680
+AVATAR_HEIGHT = 900
+
 
 # =====================================================
 # CHARACTER IMAGE FILES
 # =====================================================
 
-AVATAR_FILES = {
+CHARACTER_FILES = {
     "neutral": "01_neutral.png",
     "mouth_slight": "02_mouth_slightly_open.png",
     "mouth_wide": "03_mouth_wide_open.png",
     "blink": "04_blinking.png",
     "smile": "05_smiling.png",
     "surprised": "06_surprised.png",
-    "left": "07_left_hand_gesture.png",
-    "right": "08_right_hand_gesture.png",
-    "both": "09_both_hands_gesture.png"
+    "left_gesture": "07_left_hand_gesture.png",
+    "right_gesture": "08_right_hand_gesture.png",
+    "both_gesture": "09_both_hands_gesture.png"
 }
+
 
 # =====================================================
 # LOAD CHARACTER IMAGES
 # =====================================================
 
-def load_character_assets():
+def load_character_images():
 
-    assets = {}
+    logging.info("Loading character images...")
 
-    for name, filename in AVATAR_FILES.items():
+    characters = {}
 
-        path = os.path.join(ASSET_DIR, filename)
+    for pose, filename in CHARACTER_FILES.items():
 
-        if not os.path.exists(path):
+        image_path = os.path.join(
+            ASSET_DIR,
+            filename
+        )
+
+        if not os.path.exists(image_path):
 
             raise FileNotFoundError(
-                f"Character image missing: {path}"
+                f"Character image not found: {image_path}"
             )
 
-        image = Image.open(path).convert("RGB")
+        image = Image.open(
+            image_path
+        ).convert("RGB")
 
-        # Resize while maintaining original proportions
         image = ImageOps.contain(
             image,
-            (720, 960),
-            method=Image.Resampling.LANCZOS
+            (AVATAR_WIDTH, AVATAR_HEIGHT),
+            Image.Resampling.LANCZOS
         )
 
-        assets[name] = image
+        characters[pose] = image
 
         logging.info(
-            f"Loaded character image: {filename}"
+            f"Loaded character pose: {pose}"
         )
 
-    return assets
+    logging.info("All character images loaded successfully.")
+
+    return characters
+
+
+CHARACTERS = load_character_images()
 
 
 # =====================================================
-# HINDI FONT
+# FONT CONFIGURATION
 # =====================================================
 
 def load_hindi_font(size):
 
     font_paths = [
         "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf"
     ]
 
     for path in font_paths:
@@ -99,27 +133,94 @@ def load_hindi_font(size):
                 size
             )
 
+    logging.warning(
+        "Hindi font not found. Using default font."
+    )
+
     return ImageFont.load_default()
 
 
+TITLE_FONT = load_hindi_font(48)
+SCRIPT_FONT = load_hindi_font(48)
+SMALL_FONT = load_hindi_font(25)
+
+
 # =====================================================
-# AUDIO ANALYSIS
+# CONVERT MP3 TO WAV USING FFMPEG
 # =====================================================
 
-def analyze_audio(audio_clip):
+def convert_audio_to_wav(mp3_path, wav_path):
 
-    logging.info("Analysing audio...")
+    logging.info("Converting incoming MP3 to WAV...")
 
-    audio_array = audio_clip.to_soundarray(
-        fps=8000
+    command = [
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        mp3_path,
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-c:a",
+        "pcm_s16le",
+        wav_path
+    ]
+
+    subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE
     )
 
-    if audio_array.ndim > 1:
+    if not os.path.exists(wav_path):
 
-        audio_array = np.mean(
-            audio_array,
-            axis=1
+        raise RuntimeError(
+            "FFmpeg failed to create WAV file."
         )
+
+    logging.info("Audio conversion completed.")
+
+
+# =====================================================
+# AUDIO ANALYSIS USING FFMPEG
+# =====================================================
+
+def analyze_audio(audio_path):
+
+    logging.info(
+        "Analysing audio using FFmpeg..."
+    )
+
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        audio_path,
+        "-f",
+        "f32le",
+        "-ac",
+        "1",
+        "-ar",
+        "8000",
+        "pipe:1"
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True
+    )
+
+    audio_array = np.frombuffer(
+        result.stdout,
+        dtype=np.float32
+    )
 
     chunk_size = int(8000 * 0.08)
 
@@ -144,7 +245,10 @@ def analyze_audio(audio_clip):
 
         rms_values.append(rms)
 
-    rms_values = np.array(rms_values)
+    rms_values = np.array(
+        rms_values,
+        dtype=np.float32
+    )
 
     if len(rms_values) == 0:
 
@@ -155,130 +259,41 @@ def analyze_audio(audio_clip):
         np.max(rms_values) * 0.06
     )
 
-    logging.info("Audio analysis completed.")
+    logging.info(
+        "Audio analysis completed."
+    )
 
     return rms_values, threshold
 
 
 # =====================================================
-# GET CURRENT AUDIO LEVEL
+# GET AUDIO VOLUME AT CURRENT TIME
 # =====================================================
 
-def get_audio_level(t, rms_values):
-
-    index = int(t / 0.08)
-
-    index = min(
-        index,
-        len(rms_values) - 1
-    )
-
-    return rms_values[index]
-
-
-# =====================================================
-# CHARACTER ANIMATION
-# =====================================================
-
-def select_character_pose(
-    t,
-    rms_values,
-    threshold,
-    assets,
-    words,
-    word_index
+def get_audio_volume(
+    current_time,
+    rms_values
 ):
 
-    audio_level = get_audio_level(
-        t,
-        rms_values
+    index = int(
+        current_time / 0.08
     )
 
-    speaking = audio_level > threshold
-
-    # ---------------------------------------------
-    # 1. Eye blinking
-    # ---------------------------------------------
-
-    blink_phase = t % 4.8
-
-    if t > 1 and blink_phase < 0.16:
-
-        return assets["blink"]
-
-    # ---------------------------------------------
-    # 2. Hand gestures
-    # ---------------------------------------------
-
-    gesture_phase = t % 10.0
-
-    if speaking and 5.0 <= gesture_phase < 6.3:
-
-        gesture_cycle = int(t // 10) % 3
-
-        if gesture_cycle == 0:
-
-            return assets["left"]
-
-        elif gesture_cycle == 1:
-
-            return assets["right"]
-
-        else:
-
-            return assets["both"]
-
-    # ---------------------------------------------
-    # 3. Surprised expression
-    # ---------------------------------------------
-
-    if words and word_index < len(words):
-
-        current_word = words[word_index]
-
-        if (
-            speaking
-            and re.search(r"[!?]", current_word)
-        ):
-
-            return assets["surprised"]
-
-    # ---------------------------------------------
-    # 4. Smiling expression
-    # ---------------------------------------------
-
-    smile_phase = t % 18.0
-
-    if speaking and 14.0 <= smile_phase < 15.2:
-
-        return assets["smile"]
-
-    # ---------------------------------------------
-    # 5. Mouth animation
-    # ---------------------------------------------
-
-    if speaking:
-
-        wide_threshold = np.percentile(
-            rms_values,
-            75
+    index = max(
+        0,
+        min(
+            index,
+            len(rms_values) - 1
         )
+    )
 
-        if audio_level > wide_threshold:
-
-            return assets["mouth_wide"]
-
-        return assets["mouth_slight"]
-
-    # ---------------------------------------------
-    # 6. Neutral expression
-    # ---------------------------------------------
-
-    return assets["neutral"]
+    return float(
+        rms_values[index]
+    )
 
 
 # =====================================================
-# WORD TIMING
+# ESTIMATE WORD TIMINGS
 # =====================================================
 
 def calculate_word_timings(
@@ -289,61 +304,65 @@ def calculate_word_timings(
     words = script.split()
 
     if not words:
+        return []
 
-        return [], []
-
-    weights = []
-
-    for word in words:
-
-        weight = max(
-            len(word),
-            2
-        )
-
-        if re.search(r"[।.!?]", word):
-
-            weight += 3
-
-        weights.append(weight)
+    weights = [
+        max(len(word), 1)
+        for word in words
+    ]
 
     total_weight = sum(weights)
 
     timings = []
 
-    current_time = 0
+    current_time = 0.0
 
-    for weight in weights:
+    for index, word in enumerate(words):
 
         word_duration = (
-            duration * weight / total_weight
+            duration *
+            weights[index] /
+            total_weight
         )
 
-        timings.append(
-            (
-                current_time,
-                current_time + word_duration
-            )
+        start_time = current_time
+
+        end_time = (
+            current_time +
+            word_duration
         )
 
-        current_time += word_duration
+        timings.append({
+            "word": word,
+            "start": start_time,
+            "end": end_time
+        })
 
-    return words, timings
+        current_time = end_time
+
+    return timings
 
 
 # =====================================================
-# IDENTIFY CURRENT WORD
+# GET CURRENT WORD INDEX
 # =====================================================
 
-def get_current_word(t, timings):
+def get_current_word(
+    current_time,
+    timings
+):
 
-    for index, (start, end) in enumerate(timings):
+    for index, item in enumerate(timings):
 
-        if start <= t < end:
+        if (
+            item["start"]
+            <= current_time
+            < item["end"]
+        ):
 
             return index
 
-    if timings and t >= timings[-1][1]:
+    if timings and current_time >= timings[-1]["end"]:
 
         return len(timings) - 1
 
@@ -351,256 +370,490 @@ def get_current_word(t, timings):
 
 
 # =====================================================
-# RENDER WORD-BY-WORD HIGHLIGHTING
+# SELECT CHARACTER POSE
+# =====================================================
+
+def select_character_pose(
+    current_time,
+    volume,
+    threshold,
+    current_word
+):
+
+    # Periodic blinking
+
+    blink_position = current_time % 4.8
+
+    if blink_position < 0.16:
+
+        return "blink"
+
+    # Surprise expression for punctuation
+
+    if (
+        current_word
+        and (
+            "!" in current_word
+            or "?" in current_word
+        )
+    ):
+
+        return "surprised"
+
+    # Periodic gestures while speaking
+
+    gesture_position = current_time % 14
+
+    if volume > threshold:
+
+        if 6.0 <= gesture_position < 7.0:
+
+            return "left_gesture"
+
+        if 10.0 <= gesture_position < 11.0:
+
+            return "right_gesture"
+
+        if 12.0 <= gesture_position < 13.0:
+
+            return "both_gesture"
+
+    # Smiling expression
+
+    if 3.0 <= current_time % 12 < 4.0:
+
+        return "smile"
+
+    # Mouth animation based on audio volume
+
+    if volume > threshold * 2.5:
+
+        return "mouth_wide"
+
+    if volume > threshold:
+
+        return "mouth_slight"
+
+    return "neutral"
+
+
+# =====================================================
+# PREPARE WORD POSITIONS
+# =====================================================
+
+def build_word_layout(
+    script,
+    draw,
+    font,
+    max_width
+):
+
+    words = script.split()
+
+    positions = []
+
+    x = 0
+    y = 0
+
+    line_height = 82
+
+    for index, word in enumerate(words):
+
+        word_width = draw.textlength(
+            word,
+            font=font
+        )
+
+        space_width = draw.textlength(
+            " ",
+            font=font
+        )
+
+        if (
+            x > 0
+            and x + word_width > max_width
+        ):
+
+            x = 0
+            y += line_height
+
+        positions.append({
+            "word": word,
+            "index": index,
+            "x": x,
+            "y": y,
+            "width": word_width
+        })
+
+        x += word_width + space_width
+
+    return positions
+
+
+# =====================================================
+# RENDER HINDI TEXT PANEL
 # =====================================================
 
 def render_lyrics_panel(
     script,
-    current_word,
-    width=1120,
-    height=1080
+    current_word_index
 ):
 
-    image = Image.new(
+    panel = Image.new(
         "RGB",
-        (width, height),
-        "white"
+        (1080, 820),
+        (255, 255, 255)
     )
 
-    draw = ImageDraw.Draw(image)
+    draw = ImageDraw.Draw(panel)
 
-    heading_font = load_hindi_font(34)
+    # Panel border
 
-    text_font = load_hindi_font(52)
+    draw.rounded_rectangle(
+        (5, 5, 1075, 815),
+        radius=30,
+        fill=(255, 255, 255),
+        outline=(225, 225, 225),
+        width=3
+    )
 
     # Heading
+
     draw.text(
-        (65, 90),
-        "HINDI EXPLANATION",
-        font=heading_font,
-        fill=(120, 120, 120)
+        (45, 35),
+        "गीत का मतलब",
+        font=TITLE_FONT,
+        fill=(25, 25, 25)
     )
 
-    words = script.split()
-
-    # Moving word window
-    start_index = max(
-        0,
-        current_word - 12
+    draw.line(
+        (45, 110, 1035, 110),
+        fill=(220, 220, 220),
+        width=3
     )
 
-    end_index = min(
-        len(words),
-        current_word + 19
+    # Word layout
+
+    layout = build_word_layout(
+        script,
+        draw,
+        SCRIPT_FONT,
+        970
     )
 
-    visible_words = words[
-        start_index:end_index
-    ]
+    # Display words
 
-    x = 65
-    y = 300
+    for item in layout:
 
-    max_width = width - 110
+        word = item["word"]
 
-    line_height = 100
+        index = item["index"]
 
-    space_width = 22
+        x = 45 + item["x"]
 
-    for local_index, word in enumerate(
-        visible_words
-    ):
+        y = 155 + item["y"]
 
-        actual_index = (
-            start_index + local_index
-        )
+        word_width = item["width"]
 
-        bbox = draw.textbbox(
-            (0, 0),
-            word,
-            font=text_font
-        )
+        # Highlight current word
 
-        word_width = (
-            bbox[2] - bbox[0]
-        )
+        if index == current_word_index:
 
-        # Move to next line
-        if x + word_width > max_width:
+            draw.rounded_rectangle(
+                (
+                    x - 8,
+                    y - 5,
+                    x + word_width + 12,
+                    y + 65
+                ),
+                radius=12,
+                fill=(255, 225, 110)
+            )
 
-            x = 65
+            text_color = (25, 25, 25)
 
-            y += line_height
+        elif index < current_word_index:
 
-        # Determine word colour
-        if actual_index == current_word:
-
-            color = (255, 180, 0)
-
-        elif actual_index < current_word:
-
-            color = (45, 45, 45)
+            text_color = (70, 70, 70)
 
         else:
 
-            color = (170, 170, 170)
+            text_color = (155, 155, 155)
 
         draw.text(
             (x, y),
             word,
-            font=text_font,
-            fill=color
+            font=SCRIPT_FONT,
+            fill=text_color
         )
 
-        x += (
-            word_width + space_width
-        )
-
-    return image
+    return panel
 
 
 # =====================================================
-# GENERATE FINAL VIDEO
+# CREATE VIDEO FRAME
+# =====================================================
+
+def create_video_frame(
+    current_time,
+    characters,
+    timings,
+    rms_values,
+    threshold,
+    script
+):
+
+    frame = Image.new(
+        "RGB",
+        (WIDTH, HEIGHT),
+        (255, 255, 255)
+    )
+
+    draw = ImageDraw.Draw(frame)
+
+    # Current audio volume
+
+    volume = get_audio_volume(
+        current_time,
+        rms_values
+    )
+
+    # Current word
+
+    current_index = get_current_word(
+        current_time,
+        timings
+    )
+
+    current_word = ""
+
+    if timings:
+
+        current_word = timings[
+            current_index
+        ]["word"]
+
+    # Select character
+
+    pose = select_character_pose(
+        current_time,
+        volume,
+        threshold,
+        current_word
+    )
+
+    character = characters[pose]
+
+    # Character placement
+
+    character_x = 45
+
+    character_y = 115
+
+    frame.paste(
+        character,
+        (character_x, character_y)
+    )
+
+    # Character label
+
+    draw.text(
+        (80, 1015),
+        "THE PTG GUY",
+        font=SMALL_FONT,
+        fill=(75, 75, 75)
+    )
+
+    # Render lyrics panel
+
+    panel = render_lyrics_panel(
+        script,
+        current_index
+    )
+
+    frame.paste(
+        panel,
+        (790, 130)
+    )
+
+    # Bottom branding
+
+    draw.text(
+        (800, 1000),
+        "Punjabi Lyrics Explained in Hindi",
+        font=SMALL_FONT,
+        fill=(110, 110, 110)
+    )
+
+    return np.array(frame)
+
+
+# =====================================================
+# GENERATE VIDEO
 # =====================================================
 
 def generate_video(
     script,
-    audio_path
+    audio_base64
 ):
 
     logging.info(
         "Starting video generation..."
     )
 
-    # Load all nine character images
-    assets = load_character_assets()
+    with tempfile.TemporaryDirectory() as temp_dir:
 
-    # Load Sarvam narration
-    audio = AudioFileClip(audio_path)
-
-    duration = audio.duration
-
-    logging.info(
-        f"Audio duration: {duration:.2f} seconds"
-    )
-
-    # Analyse audio
-    rms_values, threshold = analyze_audio(
-        audio
-    )
-
-    # Calculate word timings
-    words, timings = calculate_word_timings(
-        script,
-        duration
-    )
-
-    logging.info(
-        f"Total words: {len(words)}"
-    )
-
-    # Character position
-    avatar_x = 20
-    avatar_y = 60
-
-    # Cache the lyrics panel so it is only
-    # redrawn when the highlighted word changes.
-    panel_cache = {
-        "word": None,
-        "image": None
-    }
-
-    def make_frame(t):
-
-        # Create white background
-        frame = Image.new(
-            "RGB",
-            (WIDTH, HEIGHT),
-            "white"
+        mp3_path = os.path.join(
+            temp_dir,
+            "narration.mp3"
         )
 
-        # Identify current word
-        current_word = get_current_word(
-            t,
-            timings
+        wav_path = os.path.join(
+            temp_dir,
+            "narration.wav"
         )
 
-        # Select character expression
-        character = select_character_pose(
-            t,
-            rms_values,
-            threshold,
-            assets,
-            words,
-            current_word
+        output_path = os.path.join(
+            temp_dir,
+            "output.mp4"
         )
 
-        # Centre character in left section
-        x = avatar_x + (
-            720 - character.width
-        ) // 2
+        # Decode incoming audio
 
-        y = avatar_y + (
-            960 - character.height
-        ) // 2
-
-        frame.paste(
-            character,
-            (x, y)
+        audio_bytes = base64.b64decode(
+            audio_base64
         )
 
-        # Render lyrics panel only when needed
-        if panel_cache["word"] != current_word:
+        with open(
+            mp3_path,
+            "wb"
+        ) as audio_file:
 
-            panel_cache["image"] = (
-                render_lyrics_panel(
-                    script,
-                    current_word
-                )
+            audio_file.write(
+                audio_bytes
             )
 
-            panel_cache["word"] = current_word
-
-        frame.paste(
-            panel_cache["image"],
-            (800, 0)
+        logging.info(
+            "Incoming audio saved."
         )
 
-        return np.array(frame)
+        # Convert MP3 to WAV
 
-    logging.info(
-        "Rendering final video..."
-    )
+        convert_audio_to_wav(
+            mp3_path,
+            wav_path
+        )
 
-    video = VideoClip(
-        make_frame,
-        duration=duration
-    )
+        # Analyse WAV using FFmpeg
 
-    video = video.set_audio(audio)
+        rms_values, threshold = analyze_audio(
+            wav_path
+        )
 
-    output_path = "/tmp/final_video.mp4"
+        # Open WAV using MoviePy
 
-    video.write_videofile(
-        output_path,
-        fps=FPS,
-        codec="libx264",
-        audio_codec="aac",
-        preset="medium",
-        bitrate="4000k",
-        threads=4,
-        logger=None
-    )
+        audio_clip = AudioFileClip(
+            wav_path
+        )
 
-    video.close()
+        duration = audio_clip.duration
 
-    audio.close()
+        logging.info(
+            f"Audio duration: {duration:.2f} seconds"
+        )
 
-    logging.info(
-        "Video generation completed successfully."
-    )
+        # Estimate word timings
 
-    return output_path, duration
+        timings = calculate_word_timings(
+            script,
+            duration
+        )
+
+        # Frame generator
+
+        def make_frame(t):
+
+            return create_video_frame(
+                current_time=t,
+                characters=CHARACTERS,
+                timings=timings,
+                rms_values=rms_values,
+                threshold=threshold,
+                script=script
+            )
+
+        # Create video
+
+        video_clip = VideoClip(
+            make_frame=make_frame,
+            duration=duration
+        )
+
+        video_clip = video_clip.set_fps(
+            FPS
+        )
+
+        # Attach audio
+
+        final_video = video_clip.set_audio(
+            audio_clip
+        )
+
+        logging.info(
+            "Starting MP4 export..."
+        )
+
+        # Export video
+
+        final_video.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            fps=FPS,
+            preset="medium",
+            bitrate=VIDEO_BITRATE,
+            threads=2,
+            logger=None
+        )
+
+        logging.info(
+            "MP4 export completed."
+        )
+
+        # Read generated MP4
+
+        with open(
+            output_path,
+            "rb"
+        ) as video_file:
+
+            video_bytes = video_file.read()
+
+        # Close clips only after export
+
+        final_video.close()
+
+        video_clip.close()
+
+        audio_clip.close()
+
+        # Encode MP4
+
+        video_base64 = base64.b64encode(
+            video_bytes
+        ).decode("utf-8")
+
+        logging.info(
+            "Video generation completed successfully."
+        )
+
+        return {
+            "video_base64": video_base64,
+            "duration": round(duration, 2),
+            "resolution": "1920x1080",
+            "fps": FPS,
+            "voice": "Sarvam Bulbul V3 - Shubh"
+        }
 
 
 # =====================================================
@@ -609,111 +862,36 @@ def generate_video(
 
 def handler(job):
 
+    logging.info(
+        "Received new RunPod job."
+    )
+
+    job_input = job.get("input", {})
+
+    script = job_input.get("script")
+
+    audio_base64 = job_input.get("audio_base64")
+
+    if not script:
+
+        return {
+            "error": "Hindi script is missing."
+        }
+
+    if not audio_base64:
+
+        return {
+            "error": "Audio data is missing."
+        }
+
     try:
 
-        job_input = job["input"]
-
-        script = job_input.get(
-            "script",
-            ""
-        )
-
-        audio_base64 = job_input.get(
-            "audio_base64"
-        )
-
-        if not script:
-
-            raise ValueError(
-                "Script is missing."
-            )
-
-        if not audio_base64:
-
-            raise ValueError(
-                "Audio is missing."
-            )
-
-        # Remove data URL prefix if present
-        if "," in audio_base64:
-
-            audio_base64 = audio_base64.split(
-                ",",
-                1
-            )[1]
-
-        logging.info(
-            "Decoding Sarvam audio..."
-        )
-
-        audio_bytes = base64.b64decode(
+        result = generate_video(
+            script,
             audio_base64
         )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-
-            audio_path = os.path.join(
-                temp_dir,
-                "narration.mp3"
-            )
-
-            with open(
-                audio_path,
-                "wb"
-            ) as f:
-
-                f.write(audio_bytes)
-
-            # Generate video
-            output_path, duration = generate_video(
-                script,
-                audio_path
-            )
-
-            logging.info(
-                "Encoding final MP4..."
-            )
-
-            with open(
-                output_path,
-                "rb"
-            ) as f:
-
-                video_base64 = base64.b64encode(
-                    f.read()
-                ).decode("utf-8")
-
-            file_size = (
-                os.path.getsize(output_path)
-                / (1024 * 1024)
-            )
-
-            return {
-
-                "video_base64": video_base64,
-
-                "duration": round(
-                    duration,
-                    2
-                ),
-
-                "resolution": "1920x1080",
-
-                "fps": FPS,
-
-                "voice": "Sarvam Bulbul Shubh",
-
-                "layout": (
-                    "Animated Sikh Presenter "
-                    "+ Word Highlighting"
-                ),
-
-                "file_size_mb": round(
-                    file_size,
-                    2
-                )
-
-            }
+        return result
 
     except Exception as e:
 
@@ -730,6 +908,12 @@ def handler(job):
 # START RUNPOD WORKER
 # =====================================================
 
-runpod.serverless.start({
-    "handler": handler
-})
+if __name__ == "__main__":
+
+    logging.info(
+        "Starting PTG Studio RunPod worker..."
+    )
+
+    runpod.serverless.start({
+        "handler": handler
+    })
