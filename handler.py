@@ -1,8 +1,8 @@
 import os
 import base64
 import traceback
-import runpod
 import numpy as np
+import runpod
 
 from gtts import gTTS
 
@@ -12,11 +12,14 @@ from moviepy.editor import (
     AudioFileClip,
     ImageClip,
     ColorClip,
-    CompositeVideoClip
+    CompositeVideoClip,
+    concatenate_videoclips
 )
 
 
-# ================= CONFIGURATION =================
+# =====================================================
+# VIDEO SETTINGS
+# =====================================================
 
 WIDTH = 1920
 HEIGHT = 1080
@@ -29,234 +32,246 @@ AUDIO_PATH = "/tmp/narration.mp3"
 OUTPUT_PATH = "/tmp/final_video.mp4"
 
 
-# ================= HINDI FONT =================
+# =====================================================
+# HINDI FONT
+# =====================================================
 
-def get_hindi_font():
+def get_hindi_font(size=55):
 
-    paths = [
+    font_paths = [
         "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf"
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf"
     ]
 
-    for path in paths:
+    for path in font_paths:
 
         if os.path.exists(path):
-            return path
+            return ImageFont.truetype(path, size)
 
-    raise RuntimeError("Hindi font not found.")
+    raise FileNotFoundError(
+        "Hindi font not found. Please install fonts-noto in Dockerfile."
+    )
 
 
-# ================= SUBTITLE IMAGE =================
+# =====================================================
+# CREATE SUBTITLE IMAGE
+# =====================================================
 
 def create_subtitle_image(text):
 
+    subtitle_width = 1600
+    subtitle_height = 220
+
     image = Image.new(
         "RGBA",
-        (960, HEIGHT),
+        (subtitle_width, subtitle_height),
         (0, 0, 0, 0)
     )
 
     draw = ImageDraw.Draw(image)
 
-    font = ImageFont.truetype(
-        get_hindi_font(),
-        54
-    )
+    font = get_hindi_font(55)
 
     draw.rounded_rectangle(
-        (50, 300, 910, 780),
-        radius=35,
-        fill=(15, 23, 42, 235)
+        (10, 10, subtitle_width - 10, subtitle_height - 10),
+        radius=25,
+        fill=(0, 0, 0, 190)
     )
 
-    words = text.split()
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font
+    )
 
-    lines = []
-    current = ""
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
 
-    for word in words:
+    x = (subtitle_width - text_width) // 2
+    y = (subtitle_height - text_height) // 2 - bbox[1]
 
-        test = (current + " " + word).strip()
-
-        if draw.textlength(test, font=font) < 750:
-
-            current = test
-
-        else:
-
-            if current:
-                lines.append(current)
-
-            current = word
-
-    if current:
-        lines.append(current)
-
-    line_height = 85
-
-    total_height = len(lines) * line_height
-
-    y = (HEIGHT - total_height) // 2
-
-    for line in lines:
-
-        bbox = draw.textbbox(
-            (0, 0),
-            line,
-            font=font
-        )
-
-        text_width = bbox[2] - bbox[0]
-
-        x = (960 - text_width) // 2
-
-        draw.text(
-            (x, y),
-            line,
-            font=font,
-            fill="white"
-        )
-
-        y += line_height
+    draw.text(
+        (x, y),
+        text,
+        font=font,
+        fill=(255, 255, 255, 255)
+    )
 
     return np.array(image)
 
 
-# ================= AUDIO ANALYSIS =================
+# =====================================================
+# AUDIO ANALYSIS
+# =====================================================
 
 def analyze_audio(audio_clip):
 
+    """
+    Analyze audio in small chunks.
+
+    This avoids MoviePy's full-audio to_soundarray()
+    buffer indexing problem.
+    """
+
+    duration = audio_clip.duration
+
     sample_rate = 8000
-
-    audio = audio_clip.to_soundarray(
-        fps=sample_rate
-    )
-
-    if audio.ndim == 2:
-        audio = np.mean(audio, axis=1)
-
-    samples_per_frame = max(
-        1,
-        int(sample_rate / FPS)
-    )
+    chunk_duration = 0.1
 
     envelope = []
 
-    for start in range(
-        0,
-        len(audio),
-        samples_per_frame
-    ):
+    for start in np.arange(0, duration, chunk_duration):
 
-        chunk = audio[start:start + samples_per_frame]
+        end = min(start + chunk_duration, duration)
 
-        if len(chunk):
+        try:
 
-            rms = np.sqrt(
-                np.mean(chunk ** 2)
+            chunk = audio_clip.subclip(start, end)
+
+            audio = chunk.to_soundarray(
+                fps=sample_rate
             )
 
-            envelope.append(rms)
+            chunk.close()
+
+            if audio.size == 0:
+
+                envelope.append(0)
+                continue
+
+            rms = np.sqrt(
+                np.mean(np.square(audio))
+            )
+
+            envelope.append(float(rms))
+
+        except Exception:
+
+            envelope.append(0)
 
     return envelope
 
 
-# ================= AVATAR ANIMATION =================
+# =====================================================
+# AVATAR ANIMATION
+# =====================================================
 
 def create_avatar(envelope, duration):
 
-    closed = Image.open(
+    scene1 = Image.open(
         SCENE1_PATH
     ).convert("RGBA")
 
-    opened = Image.open(
+    scene2 = Image.open(
         SCENE2_PATH
     ).convert("RGBA")
 
-    closed.thumbnail((900, 950))
+    # Resize both images to identical dimensions
+    avatar_width = 750
+    avatar_height = 900
 
-    opened = opened.resize(
-        closed.size,
+    scene1 = scene1.resize(
+        (avatar_width, avatar_height),
         Image.Resampling.LANCZOS
     )
 
-    closed_array = np.array(closed)
-    opened_array = np.array(opened)
-
-    avatar_width, avatar_height = closed.size
-
-    x = (960 - avatar_width) // 2
-    y = (HEIGHT - avatar_height) // 2
-
-    clips = []
-
-    current_state = None
-    segment_start = 0
-
-    frame_count = min(
-        len(envelope),
-        int(duration * FPS) + 1
+    scene2 = scene2.resize(
+        (avatar_width, avatar_height),
+        Image.Resampling.LANCZOS
     )
 
-    for frame in range(frame_count):
+    scene1_path = "/tmp/avatar_closed.png"
+    scene2_path = "/tmp/avatar_open.png"
 
-        state = (
-            "open"
-            if envelope[frame] > 0.015
-            else "closed"
+    scene1.save(scene1_path)
+    scene2.save(scene2_path)
+
+    # Generate mouth animation clips
+    avatar_clips = []
+
+    chunk_duration = 0.1
+
+    for index, volume in enumerate(envelope):
+
+        start = index * chunk_duration
+
+        if start >= duration:
+            break
+
+        clip_duration = min(
+            chunk_duration,
+            duration - start
         )
 
-        if current_state is None:
+        if volume > 0.015:
 
-            current_state = state
-            segment_start = frame
+            image_path = scene2_path
 
-        elif state != current_state:
+        else:
 
-            image = (
-                opened_array
-                if current_state == "open"
-                else closed_array
-            )
-
-            start = segment_start / FPS
-            end = frame / FPS
-
-            clip = (
-                ImageClip(image)
-                .set_start(start)
-                .set_duration(end - start)
-                .set_position((x, y))
-            )
-
-            clips.append(clip)
-
-            current_state = state
-            segment_start = frame
-
-    if current_state is not None:
-
-        image = (
-            opened_array
-            if current_state == "open"
-            else closed_array
-        )
-
-        start = segment_start / FPS
+            image_path = scene1_path
 
         clip = (
-            ImageClip(image)
+            ImageClip(image_path)
+            .set_duration(clip_duration)
+            .set_position(("center", "center"))
             .set_start(start)
-            .set_duration(max(0.01, duration - start))
-            .set_position((x, y))
         )
 
-        clips.append(clip)
+        avatar_clips.append(clip)
 
-    return clips
+    return avatar_clips
 
 
-# ================= MAIN HANDLER =================
+# =====================================================
+# SUBTITLE TIMING
+# =====================================================
+
+def create_subtitles(script, duration):
+
+    lines = [
+        line.strip()
+        for line in script.split("\n")
+        if line.strip()
+    ]
+
+    if not lines:
+        return []
+
+    total_characters = sum(
+        len(line) for line in lines
+    )
+
+    subtitle_clips = []
+
+    current_time = 0
+
+    for line in lines:
+
+        line_duration = (
+            duration * len(line) / total_characters
+        )
+
+        subtitle_image = create_subtitle_image(line)
+
+        clip = (
+            ImageClip(subtitle_image)
+            .set_duration(line_duration)
+            .set_start(current_time)
+            .set_position(("center", 820))
+        )
+
+        subtitle_clips.append(clip)
+
+        current_time += line_duration
+
+    return subtitle_clips
+
+
+# =====================================================
+# MAIN RUNPOD HANDLER
+# =====================================================
 
 def handler(event):
 
@@ -265,21 +280,43 @@ def handler(event):
 
     try:
 
-        input_data = event.get("input", {})
+        print("Starting video generation...")
 
-        script = input_data.get("script")
+        # ---------------------------------------------
+        # GET INPUT
+        # ---------------------------------------------
 
-        if not script or not script.strip():
+        job_input = event.get("input", {})
 
-            return {"error": "No script provided."}
+        script = job_input.get("script", "").strip()
+
+        if not script:
+
+            return {
+                "error": "Hindi script is empty."
+            }
+
+        # ---------------------------------------------
+        # CHECK AVATAR IMAGES
+        # ---------------------------------------------
 
         if not os.path.exists(SCENE1_PATH):
-            return {"error": "Closed-mouth avatar image missing."}
+
+            return {
+                "error": "Avatar image not found: my_scene1.png"
+            }
 
         if not os.path.exists(SCENE2_PATH):
-            return {"error": "Open-mouth avatar image missing."}
 
-        # STEP 1: Generate Hindi voice
+            return {
+                "error": "Avatar image not found: my_scene2.png"
+            }
+
+        # ---------------------------------------------
+        # GENERATE HINDI AUDIO
+        # ---------------------------------------------
+
+        print("Generating Hindi narration using gTTS...")
 
         tts = gTTS(
             text=script,
@@ -289,132 +326,170 @@ def handler(event):
 
         tts.save(AUDIO_PATH)
 
-        # STEP 2: Load audio
+        print("Hindi narration generated successfully.")
+
+        # ---------------------------------------------
+        # LOAD AUDIO
+        # ---------------------------------------------
 
         audio_clip = AudioFileClip(AUDIO_PATH)
 
         duration = audio_clip.duration
 
-        if duration <= 0:
-            raise RuntimeError("Invalid audio duration.")
+        print("Audio duration:", duration)
 
-        # STEP 3: Analyze voice
+        if duration <= 0:
+
+            raise ValueError("Generated audio has zero duration.")
+
+        # ---------------------------------------------
+        # ANALYZE AUDIO
+        # ---------------------------------------------
+
+        print("Analyzing audio...")
 
         envelope = analyze_audio(audio_clip)
 
-        # STEP 4: Background
+        print("Audio analysis completed.")
+
+        # ---------------------------------------------
+        # BACKGROUND
+        # ---------------------------------------------
 
         background = ColorClip(
             size=(WIDTH, HEIGHT),
-            color=(15, 23, 42)
+            color=(255, 255, 255)
         ).set_duration(duration)
 
-        # STEP 5: Avatar
+        # ---------------------------------------------
+        # AVATAR
+        # ---------------------------------------------
+
+        print("Creating avatar animation...")
 
         avatar_clips = create_avatar(
             envelope,
             duration
         )
 
-        # STEP 6: Subtitles
+        # ---------------------------------------------
+        # SUBTITLES
+        # ---------------------------------------------
 
-        lines = [
-            line.strip()
-            for line in script.splitlines()
-            if line.strip()
-        ]
+        print("Creating subtitles...")
 
-        if not lines:
-            lines = [script.strip()]
-
-        total_chars = sum(
-            len(line)
-            for line in lines
+        subtitle_clips = create_subtitles(
+            script,
+            duration
         )
 
-        subtitle_clips = []
+        # ---------------------------------------------
+        # COMBINE VIDEO
+        # ---------------------------------------------
 
-        current_time = 0
+        print("Combining video elements...")
 
-        for line in lines:
+        all_clips = [
+            background
+        ]
 
-            line_duration = (
-                duration * len(line) / total_chars
-            )
+        all_clips.extend(avatar_clips)
 
-            subtitle_image = create_subtitle_image(line)
-
-            subtitle = (
-                ImageClip(subtitle_image)
-                .set_start(current_time)
-                .set_duration(line_duration)
-                .set_position((960, 0))
-            )
-
-            subtitle_clips.append(subtitle)
-
-            current_time += line_duration
-
-        # STEP 7: Combine
+        all_clips.extend(subtitle_clips)
 
         final_video = CompositeVideoClip(
-            [
-                background,
-                *avatar_clips,
-                *subtitle_clips
-            ],
+            all_clips,
             size=(WIDTH, HEIGHT)
         )
 
-        final_video = final_video.set_audio(audio_clip)
+        final_video = final_video.set_audio(
+            audio_clip
+        )
 
-        # STEP 8: Render
+        # ---------------------------------------------
+        # EXPORT MP4
+        # ---------------------------------------------
+
+        print("Exporting final MP4...")
 
         final_video.write_videofile(
             OUTPUT_PATH,
             fps=FPS,
             codec="libx264",
             audio_codec="aac",
-            bitrate="1800k",
+            bitrate="3000k",
             preset="ultrafast",
             threads=4,
             logger=None
         )
 
-        # STEP 9: Return video to frontend
+        print("Video exported successfully.")
 
-        with open(OUTPUT_PATH, "rb") as f:
+        # ---------------------------------------------
+        # CONVERT VIDEO TO BASE64
+        # ---------------------------------------------
+
+        with open(OUTPUT_PATH, "rb") as video_file:
 
             video_base64 = base64.b64encode(
-                f.read()
+                video_file.read()
             ).decode("utf-8")
 
+        print("Video converted to Base64.")
+
+        # ---------------------------------------------
+        # RETURN RESULT
+        # ---------------------------------------------
+
         return {
+
             "video_base64": video_base64,
-            "duration": duration,
+
+            "duration": round(duration, 2),
+
             "resolution": "1920x1080",
+
             "fps": FPS
+
         }
 
-    except Exception as e:
+    except Exception as error:
+
+        print("VIDEO GENERATION ERROR:")
 
         traceback.print_exc()
 
         return {
-            "error": str(e)
+
+            "error": str(error)
+
         }
 
     finally:
 
-        if final_video:
-            final_video.close()
+        if final_video is not None:
 
-        if audio_clip:
-            audio_clip.close()
+            try:
+                final_video.close()
+            except Exception:
+                pass
+
+        if audio_clip is not None:
+
+            try:
+                audio_clip.close()
+            except Exception:
+                pass
+
+        print("Worker job cleanup completed.")
 
 
-# ================= RUNPOD START =================
+# =====================================================
+# START RUNPOD SERVERLESS
+# =====================================================
 
 runpod.serverless.start({
+
     "handler": handler
+
 })
